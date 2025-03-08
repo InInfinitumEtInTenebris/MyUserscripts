@@ -1,2 +1,2 @@
 # My AI generated userscripts.
-https://raw.githubusercontent.com/InInfinitumEtInTenebris/MEGAsyncPortable/master/TextReplace6
+https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplace6
