@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Text Replacer7 (Material You, Text File Import/Export, Case Sensitivity)
 // @namespace    http://tampermonkey.net/
-// @version      3.2.1
-// @description  Dynamically replaces text with a Material You GUI, text file–based import/export, and case-sensitive toggle per rule. Rule adding now uses separate prompts for "old text" and "new text".
+// @version      3.2.1-mod
+// @description  Dynamically replaces text with a Material You GUI, text file–based import/export, and case-sensitive toggle per rule. Rule adding now uses separate prompts for "old text" and "new text". Also supports dynamic reloading of replacements for additions and deletions.
 // @match        *://*/*
 // @grant        none
 // @run-at       document-end
@@ -16,14 +16,35 @@
     let fab;
     let isGuiOpen = false;
 
+    // A WeakMap to store original text for each text node.
+    const originalTextMap = new WeakMap();
+
     /* ------------------- STORAGE ------------------- */
+    // Remove any corrupted entries from the stored replacements.
+    function sanitizeReplacements() {
+        for (const key in replacements) {
+            const rule = replacements[key];
+            if (!rule || typeof rule.newText !== 'string') {
+                console.warn("Corrupted rule found for key:", key, "removing.");
+                delete replacements[key];
+            } else {
+                // Ensure caseSensitive is a boolean.
+                if (typeof rule.caseSensitive !== 'boolean') {
+                    rule.caseSensitive = false;
+                }
+            }
+        }
+    }
+    
     function loadReplacements() {
         const stored = localStorage.getItem('textReplacements');
         if (stored) {
             try {
                 replacements = JSON.parse(stored);
+                sanitizeReplacements();
             } catch (e) {
                 console.error("Error parsing stored replacements:", e);
+                replacements = {};
             }
         }
     }
@@ -37,13 +58,21 @@
     }
     function replaceText(node) {
         if (node.nodeType === Node.TEXT_NODE) {
-            let text = node.nodeValue;
-            for (const [oldTxt, rule] of Object.entries(replacements)) {
-                const { newText, caseSensitive } = rule;
-                const pattern = new RegExp(escapeRegExp(oldTxt), caseSensitive ? 'g' : 'gi');
-                text = text.replace(pattern, newText);
+            // Save the original text if not already stored.
+            if (!originalTextMap.has(node)) {
+                originalTextMap.set(node, node.nodeValue);
             }
-            node.nodeValue = text;
+            // Always start from the original text so that removals or edits of rules recalc correctly.
+            let baseText = originalTextMap.get(node);
+            let updatedText = baseText;
+            for (const [oldTxt, rule] of Object.entries(replacements)) {
+                if (!rule || typeof rule.newText !== 'string') continue;
+                const { newText: replacement, caseSensitive } = rule;
+                // Wrap with word boundaries to ensure whole-word matching.
+                const pattern = new RegExp('\\b' + escapeRegExp(oldTxt) + '\\b', caseSensitive ? 'g' : 'gi');
+                updatedText = updatedText.replace(pattern, replacement);
+            }
+            node.nodeValue = updatedText;
         } else if (node.nodeType === Node.ELEMENT_NODE) {
             node.childNodes.forEach(child => replaceText(child));
         }
@@ -51,16 +80,30 @@
     function runReplacements() {
         replaceText(document.body);
     }
+    // Enhanced observer: now listening for child additions and any characterData modifications.
     const observer = new MutationObserver(mutations => {
         mutations.forEach(mutation => {
+            // If text content changes, update that node.
+            if (mutation.type === 'characterData' && mutation.target.nodeType === Node.TEXT_NODE) {
+                // If the text node changed externally, update its original value.
+                originalTextMap.set(mutation.target, mutation.target.nodeValue);
+                replaceText(mutation.target);
+            }
+            // For newly added nodes, process their text.
             mutation.addedNodes.forEach(node => {
                 if (node.nodeType === Node.ELEMENT_NODE) {
+                    replaceText(node);
+                } else if (node.nodeType === Node.TEXT_NODE) {
+                    // Store original text for new text nodes.
+                    if (!originalTextMap.has(node)) {
+                        originalTextMap.set(node, node.nodeValue);
+                    }
                     replaceText(node);
                 }
             });
         });
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
     /* ------------------- GUI FUNCTIONS ------------------- */
     function displayRules() {
@@ -113,7 +156,7 @@
     }
 
     /* ------------------- UPDATED RULE ADDING ------------------- */
-    // Instead of a single prompt expecting "old:new", we now prompt separately.
+    // Separate prompts for original and replacement text.
     function addRule() {
         const oldText = prompt("Enter the text to replace:", "");
         if (oldText === null || oldText.trim() === "") {
@@ -131,7 +174,12 @@
     }
 
     function editRule(oldText) {
-        const { newText, caseSensitive } = replacements[oldText];
+        const rule = replacements[oldText];
+        if (!rule) {
+            alert("Rule not found.");
+            return;
+        }
+        const { newText, caseSensitive } = rule;
         const updatedOld = prompt("Edit original text:", oldText);
         if (updatedOld === null) return;
         const updatedNew = prompt("Edit replacement text:", newText);
@@ -187,11 +235,12 @@
                             const oldText = parts[0].trim();
                             const newText = parts[1].trim();
                             const caseSensitive = parts[2].trim() === "1";
-                            if (oldText) {
+                            if (oldText && newText !== undefined) {
                                 replacements[oldText] = { newText, caseSensitive };
                             }
                         }
                     }
+                    sanitizeReplacements();
                     saveReplacements();
                     alert("Rules imported successfully.");
                     displayRules();
