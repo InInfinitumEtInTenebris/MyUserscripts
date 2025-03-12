@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Text Replacer7 (Material You, Text File Import/Export, Case Sensitivity)
 // @namespace    http://tampermonkey.net/
-// @version      3.2.1-mod
-// @description  Dynamically replaces text with a Material You GUI, text file–based import/export, and case-sensitive toggle per rule. Rule adding now uses separate prompts for "old text" and "new text". Also supports dynamic reloading of replacements for additions and deletions.
+// @version      3.2.1-mod2
+// @description  Dynamically replaces text with a Material You GUI, text file–based import/export, and case-sensitive toggle per rule. Uses separate prompts for "old text" and "new text". Also supports dynamic reloading of replacements for additions and deletions without interfering with page loading.
 // @match        *://*/*
 // @grant        none
 // @run-at       document-end
@@ -19,8 +19,10 @@
     // A WeakMap to store original text for each text node.
     const originalTextMap = new WeakMap();
 
+    // Debounce timer for MutationObserver callback
+    let observerTimeout = null;
+
     /* ------------------- STORAGE ------------------- */
-    // Remove any corrupted entries from the stored replacements.
     function sanitizeReplacements() {
         for (const key in replacements) {
             const rule = replacements[key];
@@ -28,7 +30,6 @@
                 console.warn("Corrupted rule found for key:", key, "removing.");
                 delete replacements[key];
             } else {
-                // Ensure caseSensitive is a boolean.
                 if (typeof rule.caseSensitive !== 'boolean') {
                     rule.caseSensitive = false;
                 }
@@ -52,23 +53,38 @@
         localStorage.setItem('textReplacements', JSON.stringify(replacements));
     }
 
+    /* ------------------- HELPER FUNCTION ------------------- */
+    // Returns true if the node (or its parent) is part of our own GUI
+    function shouldSkip(node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            if (node.parentElement && node.parentElement.closest('.mui-box, .mui-toggle, .mui-fab')) {
+                return true;
+            }
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+            if (node.closest('.mui-box, .mui-toggle, .mui-fab')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /* ------------------- TEXT REPLACEMENT ------------------- */
     function escapeRegExp(string) {
         return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
     function replaceText(node) {
+        if (shouldSkip(node)) return;
         if (node.nodeType === Node.TEXT_NODE) {
             // Save the original text if not already stored.
             if (!originalTextMap.has(node)) {
                 originalTextMap.set(node, node.nodeValue);
             }
-            // Always start from the original text so that removals or edits of rules recalc correctly.
             let baseText = originalTextMap.get(node);
             let updatedText = baseText;
             for (const [oldTxt, rule] of Object.entries(replacements)) {
                 if (!rule || typeof rule.newText !== 'string') continue;
                 const { newText: replacement, caseSensitive } = rule;
-                // Wrap with word boundaries to ensure whole-word matching.
+                // Use word-boundaries to match only whole words.
                 const pattern = new RegExp('\\b' + escapeRegExp(oldTxt) + '\\b', caseSensitive ? 'g' : 'gi');
                 updatedText = updatedText.replace(pattern, replacement);
             }
@@ -80,28 +96,27 @@
     function runReplacements() {
         replaceText(document.body);
     }
-    // Enhanced observer: now listening for child additions and any characterData modifications.
+    // Debounced observer callback to handle rapid mutations gracefully.
     const observer = new MutationObserver(mutations => {
-        mutations.forEach(mutation => {
-            // If text content changes, update that node.
-            if (mutation.type === 'characterData' && mutation.target.nodeType === Node.TEXT_NODE) {
-                // If the text node changed externally, update its original value.
-                originalTextMap.set(mutation.target, mutation.target.nodeValue);
-                replaceText(mutation.target);
-            }
-            // For newly added nodes, process their text.
-            mutation.addedNodes.forEach(node => {
-                if (node.nodeType === Node.ELEMENT_NODE) {
-                    replaceText(node);
-                } else if (node.nodeType === Node.TEXT_NODE) {
-                    // Store original text for new text nodes.
-                    if (!originalTextMap.has(node)) {
-                        originalTextMap.set(node, node.nodeValue);
+        if (observerTimeout) clearTimeout(observerTimeout);
+        observerTimeout = setTimeout(() => {
+            mutations.forEach(mutation => {
+                if (mutation.type === 'characterData' && mutation.target.nodeType === Node.TEXT_NODE) {
+                    if (!shouldSkip(mutation.target)) {
+                        originalTextMap.set(mutation.target, mutation.target.nodeValue);
+                        replaceText(mutation.target);
                     }
-                    replaceText(node);
                 }
+                mutation.addedNodes.forEach(node => {
+                    if (node.nodeType === Node.ELEMENT_NODE && !shouldSkip(node)) {
+                        replaceText(node);
+                    } else if (node.nodeType === Node.TEXT_NODE && !shouldSkip(node)) {
+                        originalTextMap.set(node, node.nodeValue);
+                        replaceText(node);
+                    }
+                });
             });
-        });
+        }, 50);
     });
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
@@ -156,7 +171,6 @@
     }
 
     /* ------------------- UPDATED RULE ADDING ------------------- */
-    // Separate prompts for original and replacement text.
     function addRule() {
         const oldText = prompt("Enter the text to replace:", "");
         if (oldText === null || oldText.trim() === "") {
