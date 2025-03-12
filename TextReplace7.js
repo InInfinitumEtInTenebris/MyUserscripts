@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Text Replacer7 (Material You, Text File Import/Export, Case Sensitivity)
 // @namespace    http://tampermonkey.net/
-// @version      3.2.1-mod2
-// @description  Dynamically replaces text with a Material You GUI, text file–based import/export, and case-sensitive toggle per rule. Uses separate prompts for "old text" and "new text". Also supports dynamic reloading of replacements for additions and deletions without interfering with page loading.
+// @version      3.2.1-mod3
+// @description  Dynamically replaces text using a Material You GUI with text file import/export and case-sensitive toggling. Uses debounced replacement on added/removed nodes (no characterData observation) and skips non-content elements to avoid interfering with page load or other scripts.
 // @match        *://*/*
 // @grant        none
 // @run-at       document-end
@@ -16,10 +16,8 @@
     let fab;
     let isGuiOpen = false;
 
-    // A WeakMap to store original text for each text node.
+    // A WeakMap to store each text node’s original content.
     const originalTextMap = new WeakMap();
-
-    // Debounce timer for MutationObserver callback
     let observerTimeout = null;
 
     /* ------------------- STORAGE ------------------- */
@@ -27,12 +25,10 @@
         for (const key in replacements) {
             const rule = replacements[key];
             if (!rule || typeof rule.newText !== 'string') {
-                console.warn("Corrupted rule found for key:", key, "removing.");
+                console.warn("Corrupted rule for key:", key, "removing.");
                 delete replacements[key];
-            } else {
-                if (typeof rule.caseSensitive !== 'boolean') {
-                    rule.caseSensitive = false;
-                }
+            } else if (typeof rule.caseSensitive !== 'boolean') {
+                rule.caseSensitive = false;
             }
         }
     }
@@ -54,16 +50,17 @@
     }
 
     /* ------------------- HELPER FUNCTION ------------------- */
-    // Returns true if the node (or its parent) is part of our own GUI
+    // Returns true if this node (or one of its parents) should be skipped.
+    // Skips nodes inside our GUI as well as common non‑content tags.
     function shouldSkip(node) {
         if (node.nodeType === Node.TEXT_NODE) {
-            if (node.parentElement && node.parentElement.closest('.mui-box, .mui-toggle, .mui-fab')) {
-                return true;
-            }
+            if (!node.parentElement) return true;
+            if (node.parentElement.closest('.mui-box, .mui-toggle, .mui-fab')) return true;
+            const tag = node.parentElement.tagName;
+            if (['HEAD', 'SCRIPT', 'STYLE', 'TEXTAREA', 'CODE', 'PRE'].includes(tag)) return true;
         } else if (node.nodeType === Node.ELEMENT_NODE) {
-            if (node.closest('.mui-box, .mui-toggle, .mui-fab')) {
-                return true;
-            }
+            if (node.closest('.mui-box, .mui-toggle, .mui-fab')) return true;
+            if (['HEAD', 'SCRIPT', 'STYLE'].includes(node.tagName)) return true;
         }
         return false;
     }
@@ -75,20 +72,22 @@
     function replaceText(node) {
         if (shouldSkip(node)) return;
         if (node.nodeType === Node.TEXT_NODE) {
-            // Save the original text if not already stored.
+            // If we haven't yet stored its original content, do so.
             if (!originalTextMap.has(node)) {
                 originalTextMap.set(node, node.nodeValue);
             }
-            let baseText = originalTextMap.get(node);
+            const baseText = originalTextMap.get(node);
             let updatedText = baseText;
             for (const [oldTxt, rule] of Object.entries(replacements)) {
                 if (!rule || typeof rule.newText !== 'string') continue;
-                const { newText: replacement, caseSensitive } = rule;
-                // Use word-boundaries to match only whole words.
+                const { newText, caseSensitive } = rule;
+                // Use word-boundaries so that only whole words are replaced.
                 const pattern = new RegExp('\\b' + escapeRegExp(oldTxt) + '\\b', caseSensitive ? 'g' : 'gi');
-                updatedText = updatedText.replace(pattern, replacement);
+                updatedText = updatedText.replace(pattern, newText);
             }
-            node.nodeValue = updatedText;
+            if (node.nodeValue !== updatedText) {
+                node.nodeValue = updatedText;
+            }
         } else if (node.nodeType === Node.ELEMENT_NODE) {
             node.childNodes.forEach(child => replaceText(child));
         }
@@ -96,29 +95,14 @@
     function runReplacements() {
         replaceText(document.body);
     }
-    // Debounced observer callback to handle rapid mutations gracefully.
-    const observer = new MutationObserver(mutations => {
+    // Observer now only watches for childList mutations (node additions/removals) with a 500ms debounce.
+    const observer = new MutationObserver(() => {
         if (observerTimeout) clearTimeout(observerTimeout);
         observerTimeout = setTimeout(() => {
-            mutations.forEach(mutation => {
-                if (mutation.type === 'characterData' && mutation.target.nodeType === Node.TEXT_NODE) {
-                    if (!shouldSkip(mutation.target)) {
-                        originalTextMap.set(mutation.target, mutation.target.nodeValue);
-                        replaceText(mutation.target);
-                    }
-                }
-                mutation.addedNodes.forEach(node => {
-                    if (node.nodeType === Node.ELEMENT_NODE && !shouldSkip(node)) {
-                        replaceText(node);
-                    } else if (node.nodeType === Node.TEXT_NODE && !shouldSkip(node)) {
-                        originalTextMap.set(node, node.nodeValue);
-                        replaceText(node);
-                    }
-                });
-            });
-        }, 50);
+            runReplacements();
+        }, 500);
     });
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    observer.observe(document.body, { childList: true, subtree: true });
 
     /* ------------------- GUI FUNCTIONS ------------------- */
     function displayRules() {
@@ -170,7 +154,7 @@
         guiBox.appendChild(importButton);
     }
 
-    /* ------------------- UPDATED RULE ADDING ------------------- */
+    /* ------------------- RULE ADD/EDIT/DELETE ------------------- */
     function addRule() {
         const oldText = prompt("Enter the text to replace:", "");
         if (oldText === null || oldText.trim() === "") {
@@ -288,7 +272,7 @@
         fab.addEventListener('click', addRule);
         document.body.appendChild(fab);
 
-        // Create the transparent toggle button (hamburger icon) on the left middle side.
+        // Create the transparent toggle button (hamburger icon).
         const toggleButton = document.createElement('div');
         toggleButton.classList.add('mui-toggle');
         toggleButton.textContent = '☰';
