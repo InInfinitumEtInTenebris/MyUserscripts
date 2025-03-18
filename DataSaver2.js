@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name        Adguard Mobile Image Remover/Compressor (Global)
 // @namespace   YourNamespace
-// @version     1.6
-// @description Removes or compresses images globally to save data, including video posters. Now integrates Brotli and Zstd for on‑device compression.
+// @version     1.7
+// @description Removes or compresses images globally to save data—including video posters—using on‑device Brotli or Zstd compression.
 // @author      You
 // @match       *://*/*
 // @grant       GM_setValue
 // @grant       GM_getValue
-// @run-at      document-idle
+// @run-at      document-start
 // @mobile      true
 // @require     https://cdn.jsdelivr.net/npm/brotli-wasm@1.0.1/dist/brotli.js
 // @require     https://cdn.jsdelivr.net/npm/zstd-codec@1.3.1/dist/zstd-codec.js
@@ -15,49 +15,46 @@
 
 (function() {
     'use strict';
-
+    
     // ----- Settings Keys and Defaults -----
-    const globalRemoveKey = 'globalImageRemovalEnabled';           // Main removal/compression toggle
-    const globalCompressionKey = 'globalCompressionEnabled';         // Whether to use compression instead of removal
-    const globalCompressionAlgorithmKey = 'globalCompressionAlgorithm'; // Which compression algorithm to use
-
-    // Defaults: removal/compression is enabled on load;
-    // compression mode is off by default (so images are removed unless you enable compression),
-    // and the default compression algorithm is "placeholder".
+    const globalRemoveKey = 'globalImageRemovalEnabled';
+    const globalCompressionKey = 'globalCompressionEnabled';
+    const globalCompressionAlgorithmKey = 'globalCompressionAlgorithm';
+    
+    // Defaults: removal/compression enabled by default; compression mode off unless toggled; default algorithm "placeholder"
     const isGlobalRemoveEnabled = getValue(globalRemoveKey, true);
     let isGlobalCompressionEnabled = getValue(globalCompressionKey, false);
     let compressionAlgorithm = getValue(globalCompressionAlgorithmKey, "placeholder");
-
+    
     // ----- Variables to Store Originals -----
     let originalImages = [];
     let originalVideoPosters = [];
-    let currentImageState = 'original'; // 'original', 'removed', 'compressed'
-    const lowResPlaceholder = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="; // fallback
+    let currentImageState = 'original'; // can be 'original', 'removed', or 'compressed'
+    const lowResPlaceholder = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
     let settingsVisible = false;
-
+    
     // ----- Constants -----
     const MIN_IMAGE_SIZE = 30; // Only process images larger than this (in pixels)
     const videoHostsPattern = /youtube\.com|ytimg\.com|vimeo\.com|dailymotion\.com/i;
-
+    
     // ----- Utility Functions -----
     function saveValue(key, value) {
-        if (typeof GM_setValue !== 'undefined') {
+        try {
             GM_setValue(key, value);
-        } else {
+        } catch (e) {
             localStorage.setItem(key, JSON.stringify(value));
         }
     }
-
+    
     function getValue(key, defaultValue) {
-        if (typeof GM_getValue !== 'undefined') {
+        try {
             return GM_getValue(key, defaultValue);
-        } else {
+        } catch (e) {
             const storedValue = localStorage.getItem(key);
             return storedValue ? JSON.parse(storedValue) : defaultValue;
         }
     }
-
-    // Determine if an image should be processed (always true for known video hosts)
+    
     function shouldProcessImage(img) {
         if (videoHostsPattern.test(img.src)) {
             return true;
@@ -65,19 +62,15 @@
         const rect = img.getBoundingClientRect();
         return rect.width >= MIN_IMAGE_SIZE && rect.height >= MIN_IMAGE_SIZE;
     }
-
+    
     function filterImages(images) {
         return Array.from(images).filter(shouldProcessImage);
     }
-
+    
     // ----- Compression Helpers -----
-
-    // Compress an image element by drawing it onto a canvas at reduced dimensions,
-    // then obtaining its binary data. Depending on the selected algorithm,
-    // the binary data is (optionally) compressed and decompressed.
+    // Compress an <img> element by downscaling it on a canvas and then compressing its data.
     async function compressImage(img) {
         return new Promise(resolve => {
-            // Create a canvas and scale image to 50% of original dimensions.
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
             const width = img.naturalWidth;
@@ -87,22 +80,17 @@
             canvas.width = newWidth;
             canvas.height = newHeight;
             ctx.drawImage(img, 0, 0, newWidth, newHeight);
-
-            // Get a JPEG blob from the canvas (quality 0.5)
+    
             canvas.toBlob(async (blob) => {
                 try {
                     const arrayBuffer = await blob.arrayBuffer();
                     let compressed, decompressed;
                     if (compressionAlgorithm === "placeholder") {
-                        // No extra compression—just use the canvas output.
                         decompressed = arrayBuffer;
                     } else if (compressionAlgorithm === "brotli") {
-                        // Use Brotli (assumes Brotli.compress/decompress are available).
-                        // Note: Brotli.compress expects a Uint8Array.
                         compressed = Brotli.compress(new Uint8Array(arrayBuffer));
                         decompressed = Brotli.decompress(compressed);
                     } else if (compressionAlgorithm === "zstd") {
-                        // Use Zstd via the zstd-codec library.
                         await new Promise(resolveZstd => {
                             ZstdCodec.run(zstd => {
                                 const simple = new zstd.Simple();
@@ -112,7 +100,6 @@
                             });
                         });
                     }
-                    // Reconstruct a blob from the (de)compressed data.
                     const newBlob = new Blob([decompressed], {type: blob.type});
                     const newUrl = URL.createObjectURL(newBlob);
                     resolve(newUrl);
@@ -123,8 +110,8 @@
             }, 'image/jpeg', 0.5);
         });
     }
-
-    // For video posters we may not have an <img> element, so load from URL.
+    
+    // Similar compression for images loaded from a URL (e.g. video posters)
     async function compressImageFromUrl(url) {
         return new Promise((resolve, reject) => {
             const tempImg = new Image();
@@ -175,8 +162,9 @@
             tempImg.src = url;
         });
     }
-
+    
     // ----- Core Functions -----
+    // Remove images and video posters
     function removeAllImages() {
         const images = filterImages(document.querySelectorAll('img'));
         originalImages = [];
@@ -194,7 +182,8 @@
         currentImageState = 'removed';
         console.log('Images and video posters removed globally.');
     }
-
+    
+    // Compress images and video posters
     async function compressImages() {
         console.log("Using compression algorithm:", compressionAlgorithm);
         const images = filterImages(document.querySelectorAll('img'));
@@ -204,7 +193,7 @@
             try {
                 const newUrl = await compressImage(img);
                 img.src = newUrl;
-                img.style.visibility = ''; // ensure visible
+                img.style.visibility = '';
             } catch (e) {
                 console.error("Error compressing image:", e);
                 img.src = lowResPlaceholder;
@@ -225,7 +214,8 @@
         currentImageState = 'compressed';
         console.log('Images and video posters compressed using algorithm:', compressionAlgorithm);
     }
-
+    
+    // Restore original images and video posters
     function restoreAllImages() {
         if (currentImageState === 'removed' || currentImageState === 'compressed') {
             originalImages.forEach(item => {
@@ -243,19 +233,17 @@
             originalVideoPosters = [];
             currentImageState = 'original';
             console.log('Original images and video posters restored.');
-            // Keep removal enabled by default on restore.
             saveValue(globalRemoveKey, true);
         } else {
             console.log('No images to restore.');
         }
     }
-
+    
     function compressWithQuality(quality) {
         alert(`Image compression to ${quality}% using algorithm: ${compressionAlgorithm}.`);
-        // For demonstration, quality is not used in this example
         compressImages();
     }
-
+    
     // ----- UI: Settings Menu & Toggle Button -----
     const settingsMenu = document.createElement('div');
     settingsMenu.id = 'imageRemoverSettingsMenu';
@@ -270,7 +258,7 @@
     settingsMenu.style.display = 'none';
     settingsMenu.style.flexDirection = 'column';
     settingsMenu.style.gap = '5px';
-
+    
     // Main removal/compression toggle button.
     const removeButton = document.createElement('button');
     removeButton.textContent = isGlobalRemoveEnabled ? 'Disable Image Removal/Compression' : 'Enable Image Removal/Compression';
@@ -295,7 +283,7 @@
         }
     });
     settingsMenu.appendChild(removeButton);
-
+    
     // Toggle compression mode button.
     const toggleCompressionButton = document.createElement('button');
     toggleCompressionButton.textContent = isGlobalCompressionEnabled ? 'Disable Compression' : 'Enable Compression';
@@ -312,7 +300,7 @@
         toggleCompressionButton.textContent = isGlobalCompressionEnabled ? 'Disable Compression' : 'Enable Compression';
     });
     settingsMenu.appendChild(toggleCompressionButton);
-
+    
     // Compression algorithm selection buttons.
     const placeholderButton = document.createElement('button');
     placeholderButton.textContent = 'Use Placeholder';
@@ -328,7 +316,7 @@
         updateCompressionAlgorithmButtons();
     });
     settingsMenu.appendChild(placeholderButton);
-
+    
     const brotliButton = document.createElement('button');
     brotliButton.textContent = 'Use Brotli';
     brotliButton.style.backgroundColor = compressionAlgorithm === "brotli" ? '#666' : '#444';
@@ -343,7 +331,7 @@
         updateCompressionAlgorithmButtons();
     });
     settingsMenu.appendChild(brotliButton);
-
+    
     const zstdButton = document.createElement('button');
     zstdButton.textContent = 'Use Zstd';
     zstdButton.style.backgroundColor = compressionAlgorithm === "zstd" ? '#666' : '#444';
@@ -358,13 +346,13 @@
         updateCompressionAlgorithmButtons();
     });
     settingsMenu.appendChild(zstdButton);
-
+    
     function updateCompressionAlgorithmButtons() {
         placeholderButton.style.backgroundColor = compressionAlgorithm === "placeholder" ? '#666' : '#444';
         brotliButton.style.backgroundColor = compressionAlgorithm === "brotli" ? '#666' : '#444';
         zstdButton.style.backgroundColor = compressionAlgorithm === "zstd" ? '#666' : '#444';
     }
-
+    
     // Extra quality buttons (for demonstration)
     const compress80Button = document.createElement('button');
     compress80Button.textContent = 'Compress 80%';
@@ -376,7 +364,7 @@
     compress80Button.style.cursor = 'pointer';
     compress80Button.addEventListener('click', () => compressWithQuality(80));
     settingsMenu.appendChild(compress80Button);
-
+    
     const compress60Button = document.createElement('button');
     compress60Button.textContent = 'Compress 60%';
     compress60Button.style.backgroundColor = '#444';
@@ -387,7 +375,7 @@
     compress60Button.style.cursor = 'pointer';
     compress60Button.addEventListener('click', () => compressWithQuality(60));
     settingsMenu.appendChild(compress60Button);
-
+    
     const compress40Button = document.createElement('button');
     compress40Button.textContent = 'Compress 40%';
     compress40Button.style.backgroundColor = '#444';
@@ -398,7 +386,7 @@
     compress40Button.style.cursor = 'pointer';
     compress40Button.addEventListener('click', () => compressWithQuality(40));
     settingsMenu.appendChild(compress40Button);
-
+    
     const compress20Button = document.createElement('button');
     compress20Button.textContent = 'Compress 20%';
     compress20Button.style.backgroundColor = '#444';
@@ -409,10 +397,10 @@
     compress20Button.style.cursor = 'pointer';
     compress20Button.addEventListener('click', () => compressWithQuality(20));
     settingsMenu.appendChild(compress20Button);
-
+    
     document.body.appendChild(settingsMenu);
-
-    // ----- Toggle Button (the visible icon) -----
+    
+    // ----- Toggle Button (Visible Icon) -----
     const toggleButton = document.createElement('div');
     toggleButton.id = 'imageRemoverToggleButton';
     toggleButton.style.position = 'fixed';
@@ -430,5 +418,32 @@
         settingsVisible = !settingsVisible;
         settingsMenu.style.display = settingsVisible ? 'flex' : 'none';
     });
-
-    const iconIndicator = document.createElement(
+    
+    const iconIndicator = document.createElement('div');
+    iconIndicator.style.width = '60%';
+    iconIndicator.style.height = '60%';
+    iconIndicator.style.backgroundColor = 'white';
+    iconIndicator.style.borderRadius = '50%';
+    iconIndicator.style.margin = 'auto';
+    toggleButton.appendChild(iconIndicator);
+    
+    function appendToggleButton() {
+        if (document.body) {
+            document.body.appendChild(toggleButton);
+            console.log('Toggle button added to the DOM.');
+        } else {
+            setTimeout(appendToggleButton, 100);
+        }
+    }
+    
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', appendToggleButton);
+    } else {
+        appendToggleButton();
+    }
+    
+    // ----- Apply Removal/Compression on Page Load -----
+    if (isGlobalRemoveEnabled) {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', async () => {
+                if
