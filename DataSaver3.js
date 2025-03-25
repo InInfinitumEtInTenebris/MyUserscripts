@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Adguard Mobile Image Remover/Compressor (Global)
 // @namespace   YourNamespace
-// @version     1.6
+// @version     1.7
 // @description Removes or "compresses" images globally to save data, including video posters (e.g., YouTube thumbnails).
 // @author      You
 // @match       *://*/*
@@ -42,7 +42,11 @@
         }
     }
 
+    // Modified to skip images within our UI elements
     function shouldProcessImage(img) {
+        if (img.closest('#imageRemoverToggleButton') || img.closest('#imageRemoverSettingsMenu')) {
+            return false;
+        }
         if (videoHostsPattern.test(img.src)) return true;
         const rect = img.getBoundingClientRect();
         return rect.width >= MIN_IMAGE_SIZE && rect.height >= MIN_IMAGE_SIZE;
@@ -127,6 +131,7 @@
     const observer = new MutationObserver(mutations => {
         mutations.forEach(mutation => {
             mutation.addedNodes.forEach(node => {
+                // If an IMG is added or a node contains images, reapply removal
                 if (node.tagName === 'IMG' || (node.querySelectorAll && node.querySelectorAll('img').length > 0)) {
                     removeAllImages();
                 }
@@ -248,14 +253,14 @@
 
     // Create an image element for the toggle icon
     const toggleIcon = document.createElement('img');
-    // This Base64-encoded PNG icon represents an image/photo icon.
+    // Base64-encoded PNG icon representing an image/photo
     toggleIcon.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAY1BMVEUAAAD///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8q2g5fAAAAKXRSTlMAAQIEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uLzAxMjM0AAAC8ElEQVQ4y+3SzYqEUBiG4c9zco6np9nHc8qQWmWHEAmET1Hw/k/69FCIAtqFdd53KfFMYIP3xPsf9rmsxu1mzmBxmV9POFT6TULUT8lZ3FJRvp3Xk/Tb67bUSFCUWBdWCVRZo0JW0I8uQtU3W+UVsrV0/Ik47X2mD/0qVbjS6h0+0oFqD1OKC+9RNoN/1C4/1aYBwWa8k8l0L1hYDE8+SxO9/1L69QB/er6/KnWiF1hV9FDrK+NAYXqH1k3RUoi8mE4ar8yWDpN3+8h4nGp0wjUglIhD0Fe9Zy2N1Qcv4d+e3zTzbYJzNvC0eweMljNJTVI15VQJir6oGtBWpL83yVpP1o0lHL71k0lHL71k0lHL71k0lHL71k0lHL71k0lHL71k0lHL71k0lHL71k0lHL71k0lHL71k0lHL71k0lHL71k0lHL7/WT/wDTx+9BX+90MIAAAAASUVORK5CYII=';
     toggleIcon.style.width = '100%';
     toggleIcon.style.height = '100%';
     toggleIcon.style.borderRadius = '50%';
     toggleButton.appendChild(toggleIcon);
 
-    // Append the toggle button to the DOM once available
+    // Append the toggle button to the DOM
     function appendToggleButton() {
         if (document.body) {
             document.body.appendChild(toggleButton);
