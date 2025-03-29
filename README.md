@@ -9,6 +9,9 @@ https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/T
 * TextReplacer8
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer8.js
 
+* TextReplacer9
+https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer9.js
+
 * DataSaver (working)
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/DataSaverWork.js
 
