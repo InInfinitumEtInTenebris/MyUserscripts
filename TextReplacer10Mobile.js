@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Text Replacer10 (Mobile-Optimized)
+// @name         Text Replacer10 (Mobile-Optimized – Forced Toggle Visibility)
 // @namespace    http://tampermonkey.net/
-// @version      3.2.1-mod8
-// @description  Replaces text using a Material You GUI with text file import/export and case-sensitive toggling. Optimized for mobile devices.
+// @version      3.2.1-mod9
+// @description  Replaces text using a Material You GUI with text file import/export and case-sensitive toggling. This version forces the toggle icon to be visible on mobile by using !important rules.
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -251,14 +251,12 @@
         });
         input.click();
     }
-
     // GUI TOGGLE FUNCTION
     function toggleGUI() {
         isGuiOpen = !isGuiOpen;
         guiBox.classList.toggle('tr10-hidden', !isGuiOpen);
         fab.classList.toggle('tr10-hidden', !isGuiOpen);
     }
-
     // CREATE THE GUI ELEMENTS
     function createGUI() {
         guiBox = document.createElement('div');
@@ -276,97 +274,96 @@
         toggleButton.addEventListener('click', toggleGUI);
         document.body.appendChild(toggleButton);
     }
-
-    // APPLY MATERIAL YOU STYLES WITH HIGH Z-INDEX VALUES
+    // APPLY MATERIAL YOU STYLES WITH !important RULES
     function applyMaterialYouStyles() {
         const style = document.createElement('style');
         style.textContent = `
             .tr10-box {
-                position: fixed;
-                top: 50%;
-                left: 60px;
-                transform: translateY(-50%);
-                width: 280px;
-                background: white;
-                color: #000;
-                padding: 20px;
-                border-radius: 16px;
-                box-shadow: 0px 4px 12px rgba(0,0,0,0.3);
-                z-index: 100000;
-                max-height: 80vh;
-                overflow-y: auto;
+                position: fixed !important;
+                top: 50% !important;
+                left: 60px !important;
+                transform: translateY(-50%) !important;
+                width: 280px !important;
+                background: white !important;
+                color: #000 !important;
+                padding: 20px !important;
+                border-radius: 16px !important;
+                box-shadow: 0px 4px 12px rgba(0,0,0,0.3) !important;
+                z-index: 100000 !important;
+                max-height: 80vh !important;
+                overflow-y: auto !important;
             }
             .tr10-card {
-                background: #222;
-                color: #fff;
-                border-radius: 16px;
-                box-shadow: 0px 2px 8px rgba(0,0,0,0.2);
-                padding: 16px;
-                margin: 8px 0;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                transition: transform 0.2s ease-in-out;
+                background: #222 !important;
+                color: #fff !important;
+                border-radius: 16px !important;
+                box-shadow: 0px 2px 8px rgba(0,0,0,0.2) !important;
+                padding: 16px !important;
+                margin: 8px 0 !important;
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                transition: transform 0.2s ease-in-out !important;
             }
             .tr10-card:hover {
-                transform: scale(1.02);
+                transform: scale(1.02) !important;
             }
             .tr10-button {
-                background: #6200EE;
-                color: #fff;
-                border: none;
-                border-radius: 24px;
-                padding: 10px 16px;
-                font-size: 14px;
-                cursor: pointer;
-                transition: background 0.3s ease;
-                margin-top: 8px;
+                background: #6200EE !important;
+                color: #fff !important;
+                border: none !important;
+                border-radius: 24px !important;
+                padding: 10px 16px !important;
+                font-size: 14px !important;
+                cursor: pointer !important;
+                transition: background 0.3s ease !important;
+                margin-top: 8px !important;
             }
             .tr10-button:hover {
-                background: #3700B3;
+                background: #3700B3 !important;
             }
             .tr10-fab {
-                position: fixed;
-                bottom: 20px;
-                right: 20px;
-                width: 56px;
-                height: 56px;
-                background: #6200EE;
-                color: #fff;
-                border-radius: 50%;
-                box-shadow: 0px 4px 10px rgba(0,0,0,0.3);
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                font-size: 24px;
-                cursor: pointer;
-                transition: background 0.3s ease, transform 0.2s;
-                z-index: 100001;
+                position: fixed !important;
+                bottom: 20px !important;
+                right: 20px !important;
+                width: 56px !important;
+                height: 56px !important;
+                background: #6200EE !important;
+                color: #fff !important;
+                border-radius: 50% !important;
+                box-shadow: 0px 4px 10px rgba(0,0,0,0.3) !important;
+                display: flex !important;
+                justify-content: center !important;
+                align-items: center !important;
+                font-size: 24px !important;
+                cursor: pointer !important;
+                transition: background 0.3s ease, transform 0.2s !important;
+                z-index: 100001 !important;
             }
             .tr10-fab:hover {
-                background: #3700B3;
-                transform: scale(1.1);
+                background: #3700B3 !important;
+                transform: scale(1.1) !important;
             }
             .tr10-toggle {
-                position: fixed;
-                top: 50%;
-                left: 20px;
-                transform: translateY(-50%);
-                width: 40px;
-                height: 40px;
-                background: rgba(0,0,0,0.1);
-                border-radius: 50%;
-                cursor: pointer;
-                transition: background 0.2s;
-                border: 1px solid rgba(0,0,0,0.3);
-                z-index: 100002;
-                text-align: center;
-                line-height: 40px;
-                font-size: 24px;
-                color: rgba(255,255,255,0.9);
+                position: fixed !important;
+                top: 50% !important;
+                left: 20px !important;
+                transform: translateY(-50%) !important;
+                width: 40px !important;
+                height: 40px !important;
+                background: rgba(0,0,0,0.8) !important;
+                border-radius: 50% !important;
+                cursor: pointer !important;
+                transition: background 0.2s !important;
+                border: 1px solid rgba(0,0,0,0.6) !important;
+                z-index: 2147483647 !important;
+                text-align: center !important;
+                line-height: 40px !important;
+                font-size: 24px !important;
+                color: #fff !important;
             }
             .tr10-toggle:hover {
-                background: rgba(0,0,0,0.2);
+                background: rgba(0,0,0,1) !important;
             }
             .tr10-hidden {
                 display: none !important;
@@ -374,9 +371,8 @@
         `;
         document.head.appendChild(style);
     }
-
-    // Initialize after window load (for mobile readiness)
-    window.addEventListener('load', function() {
+    // Initialize once DOM is ready.
+    document.addEventListener('DOMContentLoaded', function() {
         loadReplacements();
         applyMaterialYouStyles();
         createGUI();
