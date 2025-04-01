@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Text Replacer10 (Material You, Text File Import/Export, Case Sensitivity)
 // @namespace    http://tampermonkey.net/
-// @version      3.2.1-mod6
-// @description  Dynamically replaces text using a Material You GUI with text file import/export and case-sensitive toggling. Uses debounced replacement on added/removed nodes (no characterData observation) and skips non-content elements to avoid interfering with page load or other scripts.
+// @version      3.2.1-mod7
+// @description  Dynamically replaces text using a Material You GUI with text file import/export and case-sensitive toggling. Uses debounced replacement on added/removed nodes and skips non-content elements to avoid interfering with page load or other scripts.
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -15,6 +15,7 @@
     let replacements = {};
     let guiBox;
     let fab;
+    let toggleButton;
     let isGuiOpen = false;
 
     // A WeakMap to store each text node’s original content.
@@ -35,7 +36,6 @@
     }
     
     function loadReplacements() {
-        // Retrieve global storage value; default to an empty object if not found.
         replacements = GM_getValue('textReplacements', {});
         sanitizeReplacements();
     }
@@ -44,16 +44,14 @@
     }
 
     /* ------------------- HELPER FUNCTION ------------------- */
-    // Returns true if this node (or one of its parents) should be skipped.
-    // Skips nodes inside our GUI as well as common non‑content tags.
     function shouldSkip(node) {
         if (node.nodeType === Node.TEXT_NODE) {
             if (!node.parentElement) return true;
-            if (node.parentElement.closest('.mui-box, .mui-toggle, .mui-fab')) return true;
+            if (node.parentElement.closest('.tr10-box, .tr10-toggle, .tr10-fab')) return true;
             const tag = node.parentElement.tagName;
             if (['HEAD', 'SCRIPT', 'STYLE', 'TEXTAREA', 'CODE', 'PRE'].includes(tag)) return true;
         } else if (node.nodeType === Node.ELEMENT_NODE) {
-            if (node.closest('.mui-box, .mui-toggle, .mui-fab')) return true;
+            if (node.closest('.tr10-box, .tr10-toggle, .tr10-fab')) return true;
             if (['HEAD', 'SCRIPT', 'STYLE'].includes(node.tagName)) return true;
         }
         return false;
@@ -66,18 +64,15 @@
     function replaceText(node) {
         if (shouldSkip(node)) return;
         if (node.nodeType === Node.TEXT_NODE) {
-            // If we haven't yet stored its original content, do so.
             if (!originalTextMap.has(node)) {
                 originalTextMap.set(node, node.nodeValue);
             }
             const baseText = originalTextMap.get(node);
             let updatedText = baseText;
             for (const [oldTxt, rule] of Object.entries(replacements)) {
-                // Only apply rule if it is for the current site.
                 if (rule.site !== window.location.hostname) continue;
                 if (!rule || typeof rule.newText !== 'string') continue;
                 const { newText, caseSensitive } = rule;
-                // Use word-boundaries so that only whole words are replaced.
                 const pattern = new RegExp('\\b' + escapeRegExp(oldTxt) + '\\b', caseSensitive ? 'g' : 'gi');
                 updatedText = updatedText.replace(pattern, newText);
             }
@@ -91,33 +86,26 @@
     function runReplacements() {
         replaceText(document.body);
     }
-    // Observer now only watches for childList mutations (node additions/removals) with a 500ms debounce.
     const observer = new MutationObserver(() => {
         if (observerTimeout) clearTimeout(observerTimeout);
-        observerTimeout = setTimeout(() => {
-            runReplacements();
-        }, 500);
+        observerTimeout = setTimeout(runReplacements, 500);
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
     /* ------------------- HANDLE PAGINATED CONTENT ------------------- */
-    // Function to re-run replacements when URL changes.
     function onUrlChange() {
         runReplacements();
     }
-    // Patch history.pushState to trigger our function.
     const originalPushState = history.pushState;
     history.pushState = function(...args) {
         originalPushState.apply(history, args);
         onUrlChange();
     };
-    // Patch history.replaceState to trigger our function.
     const originalReplaceState = history.replaceState;
     history.replaceState = function(...args) {
         originalReplaceState.apply(history, args);
         onUrlChange();
     };
-    // Listen for the popstate event (back/forward navigation).
     window.addEventListener('popstate', onUrlChange);
 
     /* ------------------- GUI FUNCTIONS ------------------- */
@@ -129,14 +117,13 @@
         title.textContent = 'Text Replacer Rules';
         guiBox.appendChild(title);
 
-        // Only display rules for the current site.
         for (const oldText in replacements) {
             const rule = replacements[oldText];
             if (rule.site !== window.location.hostname) continue;
 
             const { newText, caseSensitive } = rule;
             const ruleDiv = document.createElement('div');
-            ruleDiv.classList.add('mui-card');
+            ruleDiv.classList.add('tr10-card');
 
             const ruleText = document.createElement('span');
             ruleText.innerHTML = `<strong>"${oldText}" → "${newText}"</strong> (${caseSensitive ? "Case-Sensitive" : "Case-Insensitive"})`;
@@ -146,12 +133,12 @@
 
             const editButton = document.createElement('button');
             editButton.textContent = '✏️ Edit';
-            editButton.classList.add('mui-button');
+            editButton.classList.add('tr10-button');
             editButton.addEventListener('click', () => editRule(oldText));
 
             const deleteButton = document.createElement('button');
             deleteButton.textContent = '🗑️ Delete';
-            deleteButton.classList.add('mui-button');
+            deleteButton.classList.add('tr10-button');
             deleteButton.addEventListener('click', () => deleteRule(oldText));
 
             buttonContainer.appendChild(editButton);
@@ -163,13 +150,13 @@
 
         const exportButton = document.createElement('button');
         exportButton.textContent = '📤 Export Rules (File)';
-        exportButton.classList.add('mui-button');
+        exportButton.classList.add('tr10-button');
         exportButton.addEventListener('click', exportRules);
         guiBox.appendChild(exportButton);
 
         const importButton = document.createElement('button');
         importButton.textContent = '📥 Import Rules (File)';
-        importButton.classList.add('mui-button');
+        importButton.classList.add('tr10-button');
         importButton.addEventListener('click', importRules);
         guiBox.appendChild(importButton);
     }
@@ -184,7 +171,6 @@
         const newText = prompt("Enter the replacement text:", "");
         if (newText === null) return;
         const caseSensitive = confirm("Should this replacement be case-sensitive?");
-        // Tag the rule with the current hostname.
         replacements[oldText.trim()] = { 
             newText: newText.trim(), 
             caseSensitive, 
@@ -210,7 +196,6 @@
         const updatedCaseSensitive = confirm("Should this rule be case-sensitive?");
         if (updatedOld.trim() && updatedNew.trim()) {
             delete replacements[oldText];
-            // Keep the current site's tag
             replacements[updatedOld.trim()] = { 
                 newText: updatedNew.trim(), 
                 caseSensitive: updatedCaseSensitive,
@@ -238,7 +223,6 @@
     /* ------------------- TEXT FILE IMPORT/EXPORT ------------------- */
     function exportRules() {
         let exportText = "";
-        // Export all rules including website info and case sensitivity flag.
         for (const [oldText, rule] of Object.entries(replacements)) {
             exportText += `${oldText} : ${rule.newText} (${rule.caseSensitive ? "Case-Sensitive" : "Case-Insensitive"}) - ${rule.site}\n`;
         }
@@ -259,20 +243,17 @@
                 reader.onload = function(e) {
                     const lines = e.target.result.split("\n");
                     for (let line of lines) {
-                        // Assuming the imported format is:
-                        // term : replacement (Case-Sensitive/Case-Insensitive) - website
+                        // Expected format: term : replacement (Case-Sensitive/Case-Insensitive) - website
                         const [termPart, websitePart] = line.split(" - ");
                         if (!termPart || !websitePart) continue;
                         const termSplit = termPart.split(" : ");
                         if (termSplit.length !== 2) continue;
                         const oldText = termSplit[0].trim();
                         const replacementPart = termSplit[1].trim();
-                        // Extract newText and case sensitivity from the format: replacement (Case-Sensitive/Case-Insensitive)
                         const match = replacementPart.match(/^(.*)(Case-Sensitive|Case-Insensitive)$/);
                         if (!match) continue;
                         const newText = match[1].trim();
                         const caseSensitive = match[2] === "Case-Sensitive";
-                        // When importing, default the rule's site to the current hostname.
                         replacements[oldText] = { 
                             newText, 
                             caseSensitive, 
@@ -294,28 +275,25 @@
     /* ------------------- GUI TOGGLE ------------------- */
     function toggleGUI() {
         isGuiOpen = !isGuiOpen;
-        guiBox.classList.toggle('mui-hidden', !isGuiOpen);
-        fab.classList.toggle('mui-hidden', !isGuiOpen);
+        guiBox.classList.toggle('tr10-hidden', !isGuiOpen);
+        fab.classList.toggle('tr10-hidden', !isGuiOpen);
     }
 
     /* ------------------- CREATE GUI ------------------- */
     function createGUI() {
-        // Create the main GUI panel.
         guiBox = document.createElement('div');
-        guiBox.classList.add('mui-box', 'mui-hidden');
+        guiBox.classList.add('tr10-box', 'tr10-hidden');
         document.body.appendChild(guiBox);
         displayRules();
 
-        // Create the Floating Action Button (FAB) for adding a new rule.
         fab = document.createElement('button');
         fab.textContent = '+';
-        fab.classList.add('mui-fab', 'mui-hidden');
+        fab.classList.add('tr10-fab', 'tr10-hidden');
         fab.addEventListener('click', addRule);
         document.body.appendChild(fab);
 
-        // Create the transparent toggle button (hamburger icon).
-        const toggleButton = document.createElement('div');
-        toggleButton.classList.add('mui-toggle');
+        toggleButton = document.createElement('div');
+        toggleButton.classList.add('tr10-toggle');
         toggleButton.textContent = '☰';
         toggleButton.addEventListener('click', toggleGUI);
         document.body.appendChild(toggleButton);
@@ -325,7 +303,7 @@
     function applyMaterialYouStyles() {
         const style = document.createElement('style');
         style.textContent = `
-            .mui-box {
+            .tr10-box {
                 position: fixed;
                 top: 50%;
                 left: 60px;
@@ -340,7 +318,7 @@
                 max-height: 80vh;
                 overflow-y: auto;
             }
-            .mui-card {
+            .tr10-card {
                 background: var(--md-sys-color-surface, #222);
                 color: var(--md-sys-color-on-surface, #fff);
                 border-radius: 16px;
@@ -352,10 +330,10 @@
                 align-items: center;
                 transition: transform 0.2s ease-in-out;
             }
-            .mui-card:hover {
+            .tr10-card:hover {
                 transform: scale(1.02);
             }
-            .mui-button {
+            .tr10-button {
                 background: var(--md-sys-color-primary, #6200EE);
                 color: #fff;
                 border: none;
@@ -366,10 +344,10 @@
                 transition: background 0.3s ease;
                 margin-top: 8px;
             }
-            .mui-button:hover {
+            .tr10-button:hover {
                 background: var(--md-sys-color-primary-dark, #3700B3);
             }
-            .mui-fab {
+            .tr10-fab {
                 position: fixed;
                 bottom: 20px;
                 right: 20px;
@@ -387,14 +365,14 @@
                 transition: background 0.3s ease, transform 0.2s;
                 z-index: 10002;
             }
-            .mui-fab:hover {
+            .tr10-fab:hover {
                 background: var(--md-sys-color-primary-dark, #3700B3);
                 transform: scale(1.1);
             }
-            .mui-hidden {
+            .tr10-hidden {
                 display: none !important;
             }
-            .mui-toggle {
+            .tr10-toggle {
                 position: fixed;
                 top: 50%;
                 left: 20px;
@@ -412,7 +390,7 @@
                 font-size: 24px;
                 color: rgba(255,255,255,0.9);
             }
-            .mui-toggle:hover {
+            .tr10-toggle:hover {
                 background: rgba(0, 0, 0, 0.2);
             }
         `;
