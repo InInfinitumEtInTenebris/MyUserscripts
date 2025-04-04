@@ -35,3 +35,6 @@ https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/D
 
 * DataSaver3.js
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/DataSaver3.js
+
+* DataSaver4.js
+https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/DataSaver4.js
