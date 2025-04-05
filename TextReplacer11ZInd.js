@@ -118,7 +118,6 @@
         return false;
     }
 
-
     /* ------------------- TEXT REPLACEMENT ------------------- */
     function escapeRegExp(string) {
         // Escape characters with special meaning in regex
@@ -162,7 +161,6 @@
         }
     }
 
-
     function runReplacements() {
         replaceText(document.body);
     }
@@ -192,7 +190,6 @@
         }, 500); // 500ms debounce interval
     });
 
-
     // Observe the body for additions/removals of nodes in the subtree
     if (document.body) {
          observer.observe(document.body, { childList: true, subtree: true });
@@ -202,7 +199,6 @@
              observer.observe(document.body, { childList: true, subtree: true });
          });
     }
-
 
     /* ------------------- HANDLE PAGINATED CONTENT / SPA NAVIGATION ------------------- */
     // Function to re-run replacements when URL changes (e.g., in Single Page Applications).
@@ -230,6 +226,54 @@
     };
 
     /* ------------------- GUI FUNCTIONS ------------------- */
+    function createGUI() {
+        // Create the GUI container
+        guiBox = document.createElement('div');
+        guiBox.className = 'mui-box';
+        Object.assign(guiBox.style, {
+            position: 'fixed',
+            top: '50px',
+            right: '20px',
+            width: '300px',
+            maxHeight: '80vh',
+            overflowY: 'auto',
+            backgroundColor: 'white',
+            border: '1px solid #ccc',
+            padding: '10px',
+            boxShadow: '0 0 10px rgba(0,0,0,0.5)',
+            zIndex: '2147483647', // Ensure it's on top
+            display: 'none' // Initially hidden
+        });
+        document.body.appendChild(guiBox);
+
+        // Create the floating action button (FAB)
+        fab = document.createElement('div');
+        fab.className = 'mui-fab';
+        Object.assign(fab.style, {
+            position: 'fixed',
+            bottom: '20px',
+            right: '20px',
+            width: '50px',
+            height: '50px',
+            borderRadius: '50%',
+            backgroundColor: '#6200ea',
+            color: 'white',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '24px',
+            cursor: 'pointer',
+            zIndex: '2147483647'
+        });
+        fab.textContent = '📝'; // Icon for the button
+        fab.title = 'Toggle Text Replacer GUI';
+        fab.addEventListener('click', () => {
+            isGuiOpen = !isGuiOpen;
+            guiBox.style.display = isGuiOpen ? 'block' : 'none';
+        });
+        document.body.appendChild(fab);
+    }
+
     function displayRules() {
         if (!guiBox) return;
         guiBox.innerHTML = ''; // Clear previous content
@@ -260,7 +304,7 @@
                 ruleText.innerHTML = `"${oldText}" → "${newText}" <small>(${caseSensitive ? "Case-Sensitive" : "Case-Insensitive"})</small>`;
                 ruleText.style.flexGrow = '1'; // Allow text to take available space
                 ruleText.style.marginRight = '10px'; // Space before buttons
-                 ruleText.style.wordBreak = 'break-all'; // Prevent long text overflow
+                ruleText.style.wordBreak = 'break-all'; // Prevent long text overflow
 
                 const buttonContainer = document.createElement('div');
                 buttonContainer.style.display = 'flex'; // Align buttons horizontally
@@ -294,7 +338,6 @@
             });
        }
 
-
         // Add Import/Export buttons at the bottom
         const actionsDiv = document.createElement('div');
         actionsDiv.style.marginTop = '20px';
@@ -317,34 +360,31 @@
         actionsDiv.appendChild(importButton);
 
         guiBox.appendChild(actionsDiv);
-
     }
 
     /* ------------------- RULE ADD/EDIT/DELETE ------------------- */
     async function addRule() {
         const oldText = prompt("Enter the exact text to replace:", "");
         if (oldText === null || oldText.trim() === "") {
-            // alert("Replacement text cannot be empty."); // Avoid alert annoyance
             return;
         }
         const newText = prompt(`Enter the text to replace "${oldText}" with:`, "");
-        if (newText === null) return; // User cancelled new text prompt
+        if (newText === null) return;
 
         const caseSensitive = confirm("Should this replacement be case-sensitive?\n(OK = Yes, Cancel = No)");
 
         const trimmedOldText = oldText.trim();
         const rule = {
-            newText: newText, // Allow empty string as replacement, don't trim
+            newText: newText,
             caseSensitive,
             site: window.location.hostname
         };
 
-        replacements[trimmedOldText] = rule; // Update in-memory store
+        replacements[trimmedOldText] = rule;
         try {
-            await saveRuleToDB(trimmedOldText, rule); // Save to IndexedDB
-            // No need for alert, UI update is sufficient feedback
-            displayRules(); // Refresh the GUI list
-            runReplacements(); // Re-run replacements on the page
+            await saveRuleToDB(trimmedOldText, rule);
+            displayRules();
+            runReplacements();
         } catch (e) {
             console.error("Error saving rule:", e);
             alert("Error saving rule. Check console for details.");
@@ -361,53 +401,46 @@
         const { newText, caseSensitive } = rule;
 
         const updatedOld = prompt("Edit the text to replace:", oldText);
-        if (updatedOld === null) return; // User cancelled
+        if (updatedOld === null) return;
         const trimmedUpdatedOld = updatedOld.trim();
         if (!trimmedUpdatedOld) {
             alert("The text to replace cannot be empty.");
             return;
         }
 
-
         const updatedNew = prompt(`Edit the replacement text for "${trimmedUpdatedOld}":`, newText);
-        if (updatedNew === null) return; // User cancelled
+        if (updatedNew === null) return;
 
         const updatedCaseSensitive = confirm("Should this updated rule be case-sensitive?\n(OK = Yes, Cancel = No)");
 
-        // Prepare the updated rule object
         const updatedRule = {
-            newText: updatedNew, // Don't trim replacement text
+            newText: updatedNew,
             caseSensitive: updatedCaseSensitive,
-            site: window.location.hostname // Ensure site is correct
+            site: window.location.hostname
         };
 
         try {
-            // If the 'oldText' key changed, we need to delete the old record and add a new one
             if (trimmedUpdatedOld !== oldText) {
-                await deleteRuleFromDB(oldText); // Delete the old entry
-                 delete replacements[oldText]; // Remove old entry from memory
+                await deleteRuleFromDB(oldText);
+                delete replacements[oldText];
             }
-            // Add/update the rule in memory and DB
             replacements[trimmedUpdatedOld] = updatedRule;
             await saveRuleToDB(trimmedUpdatedOld, updatedRule);
-            // No alert needed
-            displayRules(); // Refresh UI
-            runReplacements(); // Apply changes
+            displayRules();
+            runReplacements();
         } catch (e) {
             console.error("Error updating rule:", e);
             alert("Error updating rule. Check console for details.");
         }
-
     }
 
     async function deleteRule(oldText) {
         if (confirm(`Are you sure you want to delete the rule that replaces "${oldText}"?`)) {
             try {
-                await deleteRuleFromDB(oldText); // Remove from DB
-                delete replacements[oldText]; // Remove from memory
-                // No alert needed
-                displayRules(); // Refresh UI
-                runReplacements(); // Revert text on page
+                await deleteRuleFromDB(oldText);
+                delete replacements[oldText];
+                displayRules();
+                runReplacements();
             } catch (e) {
                 console.error("Error deleting rule:", e);
                 alert("Error deleting rule. Check console for details.");
@@ -417,14 +450,13 @@
 
     /* ------------------- TEXT FILE IMPORT/EXPORT ------------------- */
     function exportRules() {
-        // Export *all* rules from memory, regardless of site
         let exportData = [];
-         for (const [oldText, rule] of Object.entries(replacements)) {
+        for (const [oldText, rule] of Object.entries(replacements)) {
              exportData.push({
                 old: oldText,
                 new: rule.newText,
                 cs: rule.caseSensitive,
-                site: rule.site // Include site in export
+                site: rule.site
              });
          }
 
@@ -433,24 +465,22 @@
             return;
         }
 
-        // Use JSON for more robust import/export
-        const exportJson = JSON.stringify(exportData, null, 2); // Pretty print JSON
+        const exportJson = JSON.stringify(exportData, null, 2);
         const blob = new Blob([exportJson], { type: 'application/json' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        // Include date in filename
-        const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+        const dateStr = new Date().toISOString().slice(0, 10);
         a.download = `text_replacer_rules_${dateStr}.json`;
-        document.body.appendChild(a); // Required for Firefox
+        document.body.appendChild(a);
         a.click();
-        document.body.removeChild(a); // Clean up
-        URL.revokeObjectURL(a.href); // Free memory
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
     }
 
     function importRules() {
         const input = document.createElement('input');
         input.type = 'file';
-        input.accept = '.json, .txt'; // Accept JSON and legacy TXT
+        input.accept = '.json, .txt';
         input.addEventListener('change', function(event) {
             const file = event.target.files[0];
             if (!file) return;
@@ -464,14 +494,7 @@
                 try {
                     let rulesToImport = [];
                     if (file.name.endsWith('.json')) {
-                         // Handle JSON import
                         const importedData = JSON.parse(content);
                         if (!Array.isArray(importedData)) {
                              throw new Error("JSON file is not a valid array of rules.");
-                        }
-                        importedData.forEach(item => {
-                            // Basic validation
-                            if (typeof item.old === 'string' && typeof item.new === 'string' && typeof item.cs === 'boolean') {
-                                 rulesToImport.push({
-                                    oldText: item.old.trim(),
-                                   
+      
