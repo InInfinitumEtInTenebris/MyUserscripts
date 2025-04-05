@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Text Replacer11ZInd (Material You, Text File Import/Export, Infinite Storage)
 // @namespace    http://tampermonkey.net/
-// @version      3.2.2-modInf-zindex-fix
+// @version      3.2.2-modInf-zindex-fix2
 // @description  Dynamically replaces text using a Material You GUI with text file import/export and case-sensitive toggling. Now uses IndexedDB for storage so that the total rules list can grow arbitrarily large. Uses debounced replacement on added/removed nodes (no characterData observation) and skips non‑content elements. Ensures GUI elements stay on top.
 // @match        *://*/*
 // @grant        none
@@ -159,13 +159,17 @@
             for (const [oldTxt, rule] of Object.entries(replacements)) {
                 // Only apply rule if it is for the current site.
                 if (rule.site !== window.location.hostname) continue;
-
-                // Ensure rule and newText are valid
                 if (!rule || typeof rule.newText !== 'string') continue;
 
                 const { newText, caseSensitive } = rule;
-                // Use word boundaries to replace whole words only
-                const pattern = new RegExp('\\b' + escapeRegExp(oldTxt) + '\\b', caseSensitive ? 'g' : 'gi');
+                let pattern;
+                // If the rule's oldText is composed entirely of non-word characters,
+                // skip using word boundaries so we don't over-match (e.g. with emoji).
+                if (/^[\W_]+$/.test(oldTxt)) {
+                    pattern = new RegExp(escapeRegExp(oldTxt), caseSensitive ? 'g' : 'gi');
+                } else {
+                    pattern = new RegExp('\\b' + escapeRegExp(oldTxt) + '\\b', caseSensitive ? 'g' : 'gi');
+                }
                 updatedText = updatedText.replace(pattern, newText);
             }
 
@@ -507,8 +511,4 @@
                                 typeof item.cs === 'boolean'
                             ) {
                                  rulesToImport.push({
-                                    oldText: item.old.trim(),
-                                    newText: item.new,
-                                    caseSensitive: item.cs,
-                                    site: window.location.hostname
-                                 });
+                 
