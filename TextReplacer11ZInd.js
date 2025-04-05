@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Text Replacer11ZInd (Material You, Text File Import/Export, Infinite Storage)
 // @namespace    http://tampermonkey.net/
-// @version      3.2.2-modInf-zindex-override
+// @version      3.2.2-modInf-zindex-fix
 // @description  Dynamically replaces text using a Material You GUI with text file import/export and case-sensitive toggling. Now uses IndexedDB for storage so that the total rules list can grow arbitrarily large. Uses debounced replacement on added/removed nodes (no characterData observation) and skips non‑content elements. Ensures GUI elements stay on top.
 // @match        *://*/*
 // @grant        none
@@ -64,6 +64,7 @@
         });
     }
 
+    // Only load valid rules: rule.newText must be a string and rule.oldText non-empty.
     function loadReplacementsFromDB() {
         return new Promise((resolve, reject) => {
             const transaction = db.transaction([STORE_NAME], "readonly");
@@ -73,8 +74,12 @@
                 const result = e.target.result;
                 replacements = {};
                 result.forEach(rule => {
-                    // Only load rules that are valid (each rule must have a newText string)
-                    if (rule && typeof rule.newText === "string") {
+                    if (
+                        rule &&
+                        typeof rule.newText === "string" &&
+                        rule.oldText &&
+                        rule.oldText.trim() !== ""
+                    ) {
                         replacements[rule.oldText] = rule;
                     }
                 });
@@ -122,7 +127,7 @@
     function shouldSkip(node) {
         if (node.nodeType === Node.TEXT_NODE) {
             if (!node.parentElement) return true;
-            // Check if the node or its parent is part of the script's GUI using our custom classes
+            // Check if the node or its parent is part of our GUI using custom classes
             if (node.parentElement.closest('.text-replacer-box, .text-replacer-fab')) return true;
             const tag = node.parentElement.tagName;
             if (['HEAD', 'SCRIPT', 'STYLE', 'TEXTAREA', 'CODE', 'PRE'].includes(tag)) return true;
@@ -143,7 +148,7 @@
         if (shouldSkip(node)) return; // Skip GUI elements and non-content tags
 
         if (node.nodeType === Node.TEXT_NODE) {
-            // If we haven't yet stored its original content, do so.
+            // Store original content if not already stored
             if (!originalTextMap.has(node)) {
                 originalTextMap.set(node, node.nodeValue);
             }
@@ -176,7 +181,7 @@
         replaceText(document.body);
     }
 
-    // Observer for debounced text replacement
+    // Observer for debounced text replacement on added nodes
     const observer = new MutationObserver((mutationsList) => {
         if (observerTimeout) clearTimeout(observerTimeout);
         observerTimeout = setTimeout(() => {
@@ -494,22 +499,16 @@
                              throw new Error("JSON file is not a valid array of rules.");
                         }
                         importedData.forEach(item => {
-                            if (typeof item.old === 'string' && typeof item.new === 'string' && typeof item.cs === 'boolean') {
+                            // Validate that old (the text to replace) is non-empty.
+                            if (
+                                typeof item.old === 'string' &&
+                                item.old.trim() !== "" &&
+                                typeof item.new === 'string' &&
+                                typeof item.cs === 'boolean'
+                            ) {
                                  rulesToImport.push({
                                     oldText: item.old.trim(),
                                     newText: item.new,
                                     caseSensitive: item.cs,
                                     site: window.location.hostname
                                  });
-                            } else {
-                                errorCount++;
-                            }
-                        });
-                    } else {
-                        alert("TXT import not supported yet.");
-                        return;
-                    }
-
-                    for (const rule of rulesToImport) {
-                        replacements[rule.oldText] = rule;
-           
