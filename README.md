@@ -21,8 +21,11 @@ https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/T
 * TextReplacer10Mobile
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer10Mobile.js
 
-* TextReplacer11
+* TextReplacer11 (working)
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer11.js
+
+* TextReplacer11ZInd
+https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer11ZInd.js
 
 * DataSaver (working)
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/DataSaverWork.js
@@ -33,7 +36,7 @@ https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/D
 * DataSaver2.js
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/DataSaver2.js
 
-* DataSaver3.js
+* DataSaver3.js (working)
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/DataSaver3.js
 
 * DataSaver4.js
