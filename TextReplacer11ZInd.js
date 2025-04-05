@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Text Replacer11ZInd (Material You, Text File Import/Export, Infinite Storage)
 // @namespace    http://tampermonkey.net/
-// @version      3.2.2-modInf-zindex-fix2
+// @version      3.2.2-modInf-zindex-fix3
 // @description  Dynamically replaces text using a Material You GUI with text file import/export and case-sensitive toggling. Now uses IndexedDB for storage so that the total rules list can grow arbitrarily large. Uses debounced replacement on added/removed nodes (no characterData observation) and skips non‑content elements. Ensures GUI elements stay on top.
 // @match        *://*/*
 // @grant        none
@@ -125,9 +125,11 @@
     // Returns true if this node (or one of its parents) should be skipped.
     // Skips nodes inside our GUI as well as common non‑content tags.
     function shouldSkip(node) {
+        // Skip if inside an SVG element – prevents replacing text within icons.
+        if (node.parentElement && node.parentElement.closest('svg')) return true;
         if (node.nodeType === Node.TEXT_NODE) {
             if (!node.parentElement) return true;
-            // Check if the node or its parent is part of our GUI using custom classes
+            // Skip if node or its parent belongs to our GUI.
             if (node.parentElement.closest('.text-replacer-box, .text-replacer-fab')) return true;
             const tag = node.parentElement.tagName;
             if (['HEAD', 'SCRIPT', 'STYLE', 'TEXTAREA', 'CODE', 'PRE'].includes(tag)) return true;
@@ -164,7 +166,7 @@
                 const { newText, caseSensitive } = rule;
                 let pattern;
                 // If the rule's oldText is composed entirely of non-word characters,
-                // skip using word boundaries so we don't over-match (e.g. with emoji).
+                // skip using word boundaries so we don't over-match.
                 if (/^[\W_]+$/.test(oldTxt)) {
                     pattern = new RegExp(escapeRegExp(oldTxt), caseSensitive ? 'g' : 'gi');
                 } else {
@@ -508,7 +510,4 @@
                                 typeof item.old === 'string' &&
                                 item.old.trim() !== "" &&
                                 typeof item.new === 'string' &&
-                                typeof item.cs === 'boolean'
-                            ) {
-                                 rulesToImport.push({
-                 
+                                typeof item.
