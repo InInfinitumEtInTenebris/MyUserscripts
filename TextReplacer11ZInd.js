@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Text Replacer11ZInd (Material You, Text File Import/Export, Infinite Storage)
 // @namespace    http://tampermonkey.net/
-// @version      3.2.2-modInf-zindex-fix3
-// @description  Dynamically replaces text using a Material You GUI with text file import/export and case-sensitive toggling. Now uses IndexedDB for storage so that the total rules list can grow arbitrarily large. Uses debounced replacement on added/removed nodes (no characterData observation) and skips non‑content elements. Ensures GUI elements stay on top.
+// @version      3.2.2-modInf
+// @description  Dynamically replaces text using a Material You GUI with text file import/export and case-sensitive toggling. Now uses IndexedDB for storage so that the total rules list can grow arbitrarily large. Uses debounced replacement on added/removed nodes (no characterData observation) and skips non‑content elements.
 // @match        *://*/*
 // @grant        none
 // @run-at       document-end
@@ -11,34 +11,13 @@
 (function() {
     'use strict';
 
-    // Inject custom CSS to override potential page styles
-    function addGlobalStyles() {
-        const style = document.createElement('style');
-        style.textContent = `
-            /* Use custom class names to avoid conflicts */
-            .text-replacer-box, .text-replacer-fab {
-                position: fixed !important;
-                z-index: 2147483647 !important;
-                display: block !important;
-                pointer-events: auto !important;
-            }
-        `;
-        document.head.appendChild(style);
-    }
-    addGlobalStyles();
-
-    // Global object to store rules in memory.
-    // Each rule is stored as: { oldText, newText, caseSensitive, site }
     let replacements = {};
     let guiBox;
     let fab;
     let isGuiOpen = false;
-
-    // A WeakMap to store each text node’s original content.
     const originalTextMap = new WeakMap();
     let observerTimeout = null;
 
-    /* ------------------- INDEXEDDB STORAGE SETUP ------------------- */
     let db;
     const DB_NAME = "TextReplacerDB";
     const DB_VERSION = 1;
@@ -64,7 +43,6 @@
         });
     }
 
-    // Only load valid rules: rule.newText must be a string and rule.oldText non-empty.
     function loadReplacementsFromDB() {
         return new Promise((resolve, reject) => {
             const transaction = db.transaction([STORE_NAME], "readonly");
@@ -74,12 +52,7 @@
                 const result = e.target.result;
                 replacements = {};
                 result.forEach(rule => {
-                    if (
-                        rule &&
-                        typeof rule.newText === "string" &&
-                        rule.oldText &&
-                        rule.oldText.trim() !== ""
-                    ) {
+                    if (rule && typeof rule.newText === "string") {
                         replacements[rule.oldText] = rule;
                     }
                 });
@@ -121,60 +94,38 @@
         });
     }
 
-    /* ------------------- HELPER FUNCTIONS ------------------- */
-    // Returns true if this node (or one of its parents) should be skipped.
-    // Skips nodes inside our GUI as well as common non‑content tags.
     function shouldSkip(node) {
-        // Skip if inside an SVG element – prevents replacing text within icons.
-        if (node.parentElement && node.parentElement.closest('svg')) return true;
         if (node.nodeType === Node.TEXT_NODE) {
             if (!node.parentElement) return true;
-            // Skip if node or its parent belongs to our GUI.
-            if (node.parentElement.closest('.text-replacer-box, .text-replacer-fab')) return true;
+            if (node.parentElement.closest('.mui-box, .mui-toggle, .mui-fab')) return true;
             const tag = node.parentElement.tagName;
             if (['HEAD', 'SCRIPT', 'STYLE', 'TEXTAREA', 'CODE', 'PRE'].includes(tag)) return true;
         } else if (node.nodeType === Node.ELEMENT_NODE) {
-            if (node.closest('.text-replacer-box, .text-replacer-fab')) return true;
+            if (node.closest('.mui-box, .mui-toggle, .mui-fab')) return true;
             if (['HEAD', 'SCRIPT', 'STYLE'].includes(node.tagName)) return true;
         }
         return false;
     }
 
-    /* ------------------- TEXT REPLACEMENT ------------------- */
     function escapeRegExp(string) {
-        // Escape characters with special meaning in regex
         return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
     function replaceText(node) {
-        if (shouldSkip(node)) return; // Skip GUI elements and non-content tags
-
+        if (shouldSkip(node)) return;
         if (node.nodeType === Node.TEXT_NODE) {
-            // Store original content if not already stored
             if (!originalTextMap.has(node)) {
                 originalTextMap.set(node, node.nodeValue);
             }
-
             const baseText = originalTextMap.get(node);
             let updatedText = baseText;
-
             for (const [oldTxt, rule] of Object.entries(replacements)) {
-                // Only apply rule if it is for the current site.
                 if (rule.site !== window.location.hostname) continue;
                 if (!rule || typeof rule.newText !== 'string') continue;
-
                 const { newText, caseSensitive } = rule;
-                let pattern;
-                // If the rule's oldText is composed entirely of non-word characters,
-                // skip using word boundaries so we don't over-match.
-                if (/^[\W_]+$/.test(oldTxt)) {
-                    pattern = new RegExp(escapeRegExp(oldTxt), caseSensitive ? 'g' : 'gi');
-                } else {
-                    pattern = new RegExp('\\b' + escapeRegExp(oldTxt) + '\\b', caseSensitive ? 'g' : 'gi');
-                }
+                const pattern = new RegExp('\\b' + escapeRegExp(oldTxt) + '\\b', caseSensitive ? 'g' : 'gi');
                 updatedText = updatedText.replace(pattern, newText);
             }
-
             if (node.nodeValue !== updatedText) {
                 node.nodeValue = updatedText;
             }
@@ -187,327 +138,329 @@
         replaceText(document.body);
     }
 
-    // Observer for debounced text replacement on added nodes
-    const observer = new MutationObserver((mutationsList) => {
+    const observer = new MutationObserver(() => {
         if (observerTimeout) clearTimeout(observerTimeout);
         observerTimeout = setTimeout(() => {
-            let needsReplacement = false;
-            for (const mutation of mutationsList) {
-                if (mutation.type === 'childList') {
-                    for (const node of mutation.addedNodes) {
-                        if (!shouldSkip(node)) {
-                            needsReplacement = true;
-                            break;
-                        }
-                    }
-                }
-                if (needsReplacement) break;
-            }
-            if (needsReplacement) {
-                runReplacements();
-            }
+            runReplacements();
         }, 500);
     });
+    observer.observe(document.body, { childList: true, subtree: true });
 
-    if (document.body) {
-         observer.observe(document.body, { childList: true, subtree: true });
-    } else {
-         window.addEventListener('DOMContentLoaded', () => {
-             observer.observe(document.body, { childList: true, subtree: true });
-         });
+    function onUrlChange() {
+        runReplacements();
     }
-
-    /* ------------------- HANDLE PAGINATED CONTENT / SPA NAVIGATION ------------------- */
-    let lastUrl = location.href;
-    new MutationObserver(() => {
-      const url = location.href;
-      if (url !== lastUrl) {
-        lastUrl = url;
-        setTimeout(runReplacements, 500);
-      }
-    }).observe(document, { subtree: true, childList: true });
-
-    window.addEventListener('popstate', () => setTimeout(runReplacements, 500));
     const originalPushState = history.pushState;
     history.pushState = function(...args) {
         originalPushState.apply(history, args);
-        setTimeout(runReplacements, 500);
+        onUrlChange();
     };
     const originalReplaceState = history.replaceState;
     history.replaceState = function(...args) {
         originalReplaceState.apply(history, args);
-        setTimeout(runReplacements, 500);
+        onUrlChange();
     };
-
-    /* ------------------- GUI FUNCTIONS ------------------- */
-    function createGUI() {
-        // Create the GUI container using a custom class name
-        guiBox = document.createElement('div');
-        guiBox.className = 'text-replacer-box';
-        Object.assign(guiBox.style, {
-            top: '50px',
-            right: '20px',
-            width: '300px',
-            maxHeight: '80vh',
-            overflowY: 'auto',
-            backgroundColor: 'white',
-            border: '1px solid #ccc',
-            padding: '10px',
-            boxShadow: '0 0 10px rgba(0,0,0,0.5)',
-            display: 'none'
-        });
-        document.body.appendChild(guiBox);
-
-        // Create the floating action button (FAB)
-        fab = document.createElement('div');
-        fab.className = 'text-replacer-fab';
-        Object.assign(fab.style, {
-            bottom: '20px',
-            right: '20px',
-            width: '50px',
-            height: '50px',
-            borderRadius: '50%',
-            backgroundColor: '#6200ea',
-            color: 'white',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '24px',
-            cursor: 'pointer'
-        });
-        fab.textContent = '📝';
-        fab.title = 'Toggle Text Replacer GUI';
-        fab.addEventListener('click', () => {
-            isGuiOpen = !isGuiOpen;
-            guiBox.style.display = isGuiOpen ? 'block' : 'none';
-        });
-        document.body.appendChild(fab);
-    }
+    window.addEventListener('popstate', onUrlChange);
 
     function displayRules() {
         if (!guiBox) return;
         guiBox.innerHTML = '';
 
         const title = document.createElement('h2');
-        title.textContent = `Replacements for ${window.location.hostname}`;
-        title.style.marginTop = '0';
-        title.style.fontSize = '18px';
+        title.textContent = 'Text Replacer Rules';
         guiBox.appendChild(title);
 
-        const currentSiteRules = Object.entries(replacements)
-            .filter(([_, rule]) => rule.site === window.location.hostname)
-            .sort(([oldA], [oldB]) => oldA.localeCompare(oldB));
+        for (const oldText in replacements) {
+            const rule = replacements[oldText];
+            if (rule.site !== window.location.hostname) continue;
 
-        if (currentSiteRules.length === 0) {
-             const noRulesMsg = document.createElement('p');
-             noRulesMsg.textContent = 'No rules defined for this site yet.';
-             noRulesMsg.style.fontStyle = 'italic';
-             guiBox.appendChild(noRulesMsg);
-        } else {
-            currentSiteRules.forEach(([oldText, rule]) => {
-                const { newText, caseSensitive } = rule;
-                const ruleDiv = document.createElement('div');
-                ruleDiv.classList.add('mui-card');
+            const { newText, caseSensitive } = rule;
+            const ruleDiv = document.createElement('div');
+            ruleDiv.classList.add('mui-card');
 
-                const ruleText = document.createElement('span');
-                ruleText.innerHTML = `"${oldText}" → "${newText}" <small>(${caseSensitive ? "Case-Sensitive" : "Case-Insensitive"})</small>`;
-                ruleText.style.flexGrow = '1';
-                ruleText.style.marginRight = '10px';
-                ruleText.style.wordBreak = 'break-all';
+            const ruleText = document.createElement('span');
+            ruleText.innerHTML = `<strong>"${oldText}" → "${newText}"</strong> (${caseSensitive ? "Case-Sensitive" : "Case-Insensitive"})`;
+            ruleDiv.appendChild(ruleText);
 
-                const buttonContainer = document.createElement('div');
-                buttonContainer.style.display = 'flex';
-                buttonContainer.style.gap = '5px';
-                buttonContainer.style.flexShrink = '0';
+            const buttonContainer = document.createElement('div');
 
-                const editButton = document.createElement('button');
-                editButton.textContent = '✏️';
-                editButton.title = 'Edit Rule';
-                editButton.classList.add('mui-button', 'mui-button-icon');
-                editButton.addEventListener('click', (e) => {
-                     e.stopPropagation();
-                     editRule(oldText);
-                });
+            const editButton = document.createElement('button');
+            editButton.textContent = '✏️ Edit';
+            editButton.classList.add('mui-button');
+            editButton.addEventListener('click', () => editRule(oldText));
 
-                const deleteButton = document.createElement('button');
-                deleteButton.textContent = '🗑️';
-                deleteButton.title = 'Delete Rule';
-                deleteButton.classList.add('mui-button', 'mui-button-icon', 'mui-button-danger');
-                deleteButton.addEventListener('click', (e) => {
-                     e.stopPropagation();
-                     deleteRule(oldText);
-                });
+            const deleteButton = document.createElement('button');
+            deleteButton.textContent = '🗑️ Delete';
+            deleteButton.classList.add('mui-button');
+            deleteButton.addEventListener('click', () => deleteRule(oldText));
 
-                buttonContainer.appendChild(editButton);
-                buttonContainer.appendChild(deleteButton);
-                ruleDiv.appendChild(ruleText);
-                ruleDiv.appendChild(buttonContainer);
+            buttonContainer.appendChild(editButton);
+            buttonContainer.appendChild(deleteButton);
+            ruleDiv.appendChild(buttonContainer);
 
-                guiBox.appendChild(ruleDiv);
-            });
-       }
-
-        const actionsDiv = document.createElement('div');
-        actionsDiv.style.marginTop = '20px';
-        actionsDiv.style.display = 'flex';
-        actionsDiv.style.gap = '10px';
-        actionsDiv.style.flexWrap = 'wrap';
+            guiBox.appendChild(ruleDiv);
+        }
 
         const exportButton = document.createElement('button');
-        exportButton.textContent = '📤 Export All Rules';
-        exportButton.title = 'Export all rules to a text file';
+        exportButton.textContent = '📤 Export Rules (File)';
         exportButton.classList.add('mui-button');
         exportButton.addEventListener('click', exportRules);
-        actionsDiv.appendChild(exportButton);
+        guiBox.appendChild(exportButton);
 
         const importButton = document.createElement('button');
-        importButton.textContent = '📥 Import Rules';
-        importButton.title = 'Import rules from a text file (adds to current site)';
+        importButton.textContent = '📥 Import Rules (File)';
         importButton.classList.add('mui-button');
         importButton.addEventListener('click', importRules);
-        actionsDiv.appendChild(importButton);
-
-        guiBox.appendChild(actionsDiv);
+        guiBox.appendChild(importButton);
     }
 
-    /* ------------------- RULE ADD/EDIT/DELETE ------------------- */
     async function addRule() {
-        const oldText = prompt("Enter the exact text to replace:", "");
-        if (oldText === null || oldText.trim() === "") {
-            return;
-        }
-        const newText = prompt(`Enter the text to replace "${oldText}" with:`, "");
+        const oldText = prompt("Enter the text to replace:", "");
+        if (oldText === null || oldText.trim() === "") return alert("You must provide the text to replace.");
+        const newText = prompt("Enter the replacement text:", "");
         if (newText === null) return;
-
-        const caseSensitive = confirm("Should this replacement be case-sensitive?\n(OK = Yes, Cancel = No)");
-
-        const trimmedOldText = oldText.trim();
-        const rule = {
-            newText: newText,
-            caseSensitive,
-            site: window.location.hostname
-        };
-
-        replacements[trimmedOldText] = rule;
+        const caseSensitive = confirm("Should this replacement be case-sensitive?");
+        const rule = { newText: newText.trim(), caseSensitive, site: window.location.hostname };
+        replacements[oldText.trim()] = rule;
         try {
-            await saveRuleToDB(trimmedOldText, rule);
+            await saveRuleToDB(oldText.trim(), rule);
+            alert("Replacement rule added.");
             displayRules();
             runReplacements();
         } catch (e) {
-            console.error("Error saving rule:", e);
-            alert("Error saving rule. Check console for details.");
+            alert("Error saving rule.");
         }
     }
 
     async function editRule(oldText) {
         const rule = replacements[oldText];
-        if (!rule) {
-            alert("Rule not found for editing.");
-            return;
-        }
-
+        if (!rule) return alert("Rule not found.");
         const { newText, caseSensitive } = rule;
-        const updatedOld = prompt("Edit the text to replace:", oldText);
+        const updatedOld = prompt("Edit original text:", oldText);
         if (updatedOld === null) return;
-        const trimmedUpdatedOld = updatedOld.trim();
-        if (!trimmedUpdatedOld) {
-            alert("The text to replace cannot be empty.");
-            return;
-        }
-
-        const updatedNew = prompt(`Edit the replacement text for "${trimmedUpdatedOld}":`, newText);
+        const updatedNew = prompt("Edit replacement text:", newText);
         if (updatedNew === null) return;
-        const updatedCaseSensitive = confirm("Should this updated rule be case-sensitive?\n(OK = Yes, Cancel = No)");
-
-        const updatedRule = {
-            newText: updatedNew,
-            caseSensitive: updatedCaseSensitive,
-            site: window.location.hostname
-        };
-
-        try {
-            if (trimmedUpdatedOld !== oldText) {
-                await deleteRuleFromDB(oldText);
+        const updatedCaseSensitive = confirm("Should this rule be case-sensitive?");
+        if (updatedOld.trim() && updatedNew.trim()) {
+            if (updatedOld.trim() !== oldText) {
+                try {
+                    await deleteRuleFromDB(oldText);
+                } catch (e) {
+                    alert("Error updating rule.");
+                    return;
+                }
                 delete replacements[oldText];
             }
-            replacements[trimmedUpdatedOld] = updatedRule;
-            await saveRuleToDB(trimmedUpdatedOld, updatedRule);
-            displayRules();
-            runReplacements();
-        } catch (e) {
-            console.error("Error updating rule:", e);
-            alert("Error updating rule. Check console for details.");
+            const updatedRule = { newText: updatedNew.trim(), caseSensitive: updatedCaseSensitive, site: window.location.hostname };
+            replacements[updatedOld.trim()] = updatedRule;
+            try {
+                await saveRuleToDB(updatedOld.trim(), updatedRule);
+                alert("Rule updated.");
+                displayRules();
+                runReplacements();
+            } catch (e) {
+                alert("Error updating rule.");
+            }
+        } else {
+            alert("Both values must be non-empty.");
         }
     }
 
     async function deleteRule(oldText) {
-        if (confirm(`Are you sure you want to delete the rule that replaces "${oldText}"?`)) {
+        if (confirm(`Delete rule "${oldText}"?`)) {
             try {
                 await deleteRuleFromDB(oldText);
                 delete replacements[oldText];
+                alert("Rule deleted.");
                 displayRules();
                 runReplacements();
             } catch (e) {
-                console.error("Error deleting rule:", e);
-                alert("Error deleting rule. Check console for details.");
+                alert("Error deleting rule.");
             }
         }
     }
 
-    /* ------------------- TEXT FILE IMPORT/EXPORT ------------------- */
     function exportRules() {
-        let exportData = [];
+        let exportText = "";
         for (const [oldText, rule] of Object.entries(replacements)) {
-             exportData.push({
-                old: oldText,
-                new: rule.newText,
-                cs: rule.caseSensitive,
-                site: rule.site
-             });
-         }
-
-        if (exportData.length === 0) {
-            alert("No rules to export.");
-            return;
+            exportText += `${oldText}:${rule.newText}:${rule.caseSensitive ? "1" : "0"}\n`;
         }
-
-        const exportJson = JSON.stringify(exportData, null, 2);
-        const blob = new Blob([exportJson], { type: 'application/json' });
+        const blob = new Blob([exportText], { type: 'text/plain' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        const dateStr = new Date().toISOString().slice(0, 10);
-        a.download = `text_replacer_rules_${dateStr}.json`;
-        document.body.appendChild(a);
+        a.download = 'text_replacements.txt';
         a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(a.href);
     }
 
     function importRules() {
         const input = document.createElement('input');
         input.type = 'file';
-        input.accept = '.json, .txt';
+        input.accept = '.txt';
         input.addEventListener('change', function(event) {
             const file = event.target.files[0];
-            if (!file) return;
-
-            const reader = new FileReader();
-            reader.onload = async function(e) {
-                const content = e.target.result;
-                let importedCount = 0;
-                let errorCount = 0;
-
-                try {
-                    let rulesToImport = [];
-                    if (file.name.endsWith('.json')) {
-                        const importedData = JSON.parse(content);
-                        if (!Array.isArray(importedData)) {
-                             throw new Error("JSON file is not a valid array of rules.");
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const lines = e.target.result.split("\n");
+                    for (let line of lines) {
+                        const parts = line.split(":");
+                        if (parts.length === 3) {
+                            const oldText = parts[0].trim();
+                            const newText = parts[1].trim();
+                            const caseSensitive = parts[2].trim() === "1";
+                            if (oldText && newText !== undefined) {
+                                const rule = { newText, caseSensitive, site: window.location.hostname };
+                                replacements[oldText] = rule;
+                                try {
+                                    await saveRuleToDB(oldText, rule);
+                                } catch (e) {
+                                    console.error("Error importing rule", oldText, e);
+                                }
+                            }
                         }
-                        importedData.forEach(item => {
-                            // Validate that old (the text to replace) is non-empty.
-                            if (
-                                typeof item.old === 'string' &&
-                                item.old.trim() !== "" &&
-                                typeof item.new === 'string' &&
-                                typeof item.
+                    }
+                    alert("Rules imported successfully.");
+                    displayRules();
+                    runReplacements();
+                };
+                reader.readAsText(file);
+            }
+        });
+        input.click();
+    }
+
+    function toggleGUI() {
+        isGuiOpen = !isGuiOpen;
+        guiBox.classList.toggle('mui-hidden', !isGuiOpen);
+        fab.classList.toggle('mui-hidden', !isGuiOpen);
+    }
+
+    function createGUI() {
+        guiBox = document.createElement('div');
+        guiBox.classList.add('mui-box', 'mui-hidden');
+        document.body.appendChild(guiBox);
+        displayRules();
+
+        fab = document.createElement('button');
+        fab.textContent = '+';
+        fab.classList.add('mui-fab', 'mui-hidden');
+        fab.addEventListener('click', addRule);
+        document.body.appendChild(fab);
+
+        const toggleButton = document.createElement('div');
+        toggleButton.classList.add('mui-toggle');
+        toggleButton.textContent = '☰';
+        toggleButton.addEventListener('click', toggleGUI);
+        document.body.appendChild(toggleButton);
+    }
+
+    function applyMaterialYouStyles() {
+        const style = document.createElement('style');
+        style.textContent = `
+            .mui-box {
+                position: fixed;
+                top: 50%;
+                left: 60px;
+                transform: translateY(-50%);
+                width: 280px;
+                background: white;
+                color: #000;
+                padding: 20px;
+                border-radius: 16px;
+                box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.3);
+                z-index: 2147483647;
+                max-height: 80vh;
+                overflow-y: auto;
+            }
+            .mui-card {
+                background: var(--md-sys-color-surface, #222);
+                color: var(--md-sys-color-on-surface, #fff);
+                border-radius: 16px;
+                box-shadow: 0px 2px 8px rgba(0, 0, 0, 0.2);
+                padding: 16px;
+                margin: 8px 0;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                transition: transform 0.2s ease-in-out;
+            }
+            .mui-card:hover {
+                transform: scale(1.02);
+            }
+            .mui-button {
+                background: var(--md-sys-color-primary, #6200EE);
+                color: #fff;
+                border: none;
+                border-radius: 24px;
+                padding: 10px 16px;
+                font-size: 14px;
+                cursor: pointer;
+                transition: background 0.3s ease;
+                margin-top: 8px;
+            }
+            .mui-button:hover {
+                background: var(--md-sys-color-primary-dark, #3700B3);
+            }
+            .mui-fab {
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                width: 56px;
+                height: 56px;
+                background: var(--md-sys-color-primary, #6200EE);
+                color: #fff;
+                border-radius: 50%;
+                box-shadow: 0px 4px 10px rgba(0,0,0,0.3);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                font-size: 24px;
+                cursor: pointer;
+                transition: background 0.3s ease, transform 0.2s;
+                z-index: 2147483647;
+            }
+            .mui-fab:hover {
+                background: var(--md-sys-color-primary-dark, #3700B3);
+                transform: scale(1.1);
+            }
+            .mui-hidden {
+                display: none !important;
+            }
+            .mui-toggle {
+                position: fixed;
+                top: 50%;
+                left: 20px;
+                transform: translateY(-50%);
+                width: 40px;
+                height: 40px;
+                background: rgba(0, 0, 0, 0.1);
+                border-radius: 50%;
+                cursor: pointer;
+                transition: background 0.2s;
+                border: 1px solid rgba(0, 0, 0, 0.3);
+                z-index: 2147483647;
+                text-align: center;
+                line-height: 40px;
+                font-size: 24px;
+                color: rgba(255,255,255,0.9);
+            }
+            .mui-toggle:hover {
+                background: rgba(0, 0, 0, 0.2);
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    async function main() {
+        try {
+            await initDB();
+            await loadReplacementsFromDB();
+        } catch (e) {
+            console.error("Error initializing storage:", e);
+        }
+        applyMaterialYouStyles();
+        createGUI();
+        runReplacements();
+    }
+
+    main();
+})();
