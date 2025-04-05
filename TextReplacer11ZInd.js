@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Text Replacer11ZInd (Material You, Text File Import/Export, Infinite Storage)
 // @namespace    http://tampermonkey.net/
-// @version      3.2.2-modInf-zindex
+// @version      3.2.2-modInf-zindex-override
 // @description  Dynamically replaces text using a Material You GUI with text file import/export and case-sensitive toggling. Now uses IndexedDB for storage so that the total rules list can grow arbitrarily large. Uses debounced replacement on added/removed nodes (no characterData observation) and skips non‑content elements. Ensures GUI elements stay on top.
 // @match        *://*/*
 // @grant        none
@@ -10,6 +10,22 @@
 
 (function() {
     'use strict';
+
+    // Inject custom CSS to override potential page styles
+    function addGlobalStyles() {
+        const style = document.createElement('style');
+        style.textContent = `
+            /* Use custom class names to avoid conflicts */
+            .text-replacer-box, .text-replacer-fab {
+                position: fixed !important;
+                z-index: 2147483647 !important;
+                display: block !important;
+                pointer-events: auto !important;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+    addGlobalStyles();
 
     // Global object to store rules in memory.
     // Each rule is stored as: { oldText, newText, caseSensitive, site }
@@ -106,13 +122,12 @@
     function shouldSkip(node) {
         if (node.nodeType === Node.TEXT_NODE) {
             if (!node.parentElement) return true;
-            // Check if the node or its parent is part of the script's GUI
-            if (node.parentElement.closest('.mui-box, .mui-toggle, .mui-fab')) return true;
+            // Check if the node or its parent is part of the script's GUI using our custom classes
+            if (node.parentElement.closest('.text-replacer-box, .text-replacer-fab')) return true;
             const tag = node.parentElement.tagName;
             if (['HEAD', 'SCRIPT', 'STYLE', 'TEXTAREA', 'CODE', 'PRE'].includes(tag)) return true;
         } else if (node.nodeType === Node.ELEMENT_NODE) {
-            // Check if the element itself is part of the script's GUI
-            if (node.closest('.mui-box, .mui-toggle, .mui-fab')) return true;
+            if (node.closest('.text-replacer-box, .text-replacer-fab')) return true;
             if (['HEAD', 'SCRIPT', 'STYLE'].includes(node.tagName)) return true;
         }
         return false;
@@ -144,19 +159,15 @@
                 if (!rule || typeof rule.newText !== 'string') continue;
 
                 const { newText, caseSensitive } = rule;
-
                 // Use word boundaries to replace whole words only
-                // Escape the old text for use in RegExp
                 const pattern = new RegExp('\\b' + escapeRegExp(oldTxt) + '\\b', caseSensitive ? 'g' : 'gi');
                 updatedText = updatedText.replace(pattern, newText);
             }
 
-            // Update the node value only if it has actually changed.
             if (node.nodeValue !== updatedText) {
                 node.nodeValue = updatedText;
             }
         } else if (node.nodeType === Node.ELEMENT_NODE) {
-            // Recursively process child nodes
             node.childNodes.forEach(child => replaceText(child));
         }
     }
@@ -165,54 +176,46 @@
         replaceText(document.body);
     }
 
-    // Observer now only watches for childList mutations (node additions/removals) with a 500ms debounce.
+    // Observer for debounced text replacement
     const observer = new MutationObserver((mutationsList) => {
-        // Debounce the replacement logic
         if (observerTimeout) clearTimeout(observerTimeout);
         observerTimeout = setTimeout(() => {
-            // Check if any added nodes are outside the GUI before running full replacements
             let needsReplacement = false;
             for (const mutation of mutationsList) {
                 if (mutation.type === 'childList') {
                     for (const node of mutation.addedNodes) {
-                         if (!shouldSkip(node)) { // Only trigger if added node is not part of GUI
+                        if (!shouldSkip(node)) {
                             needsReplacement = true;
                             break;
-                         }
+                        }
                     }
                 }
                 if (needsReplacement) break;
             }
-
             if (needsReplacement) {
                 runReplacements();
             }
-        }, 500); // 500ms debounce interval
+        }, 500);
     });
 
-    // Observe the body for additions/removals of nodes in the subtree
     if (document.body) {
          observer.observe(document.body, { childList: true, subtree: true });
     } else {
-         // Fallback if body isn't ready immediately (though @run-at document-end should prevent this)
          window.addEventListener('DOMContentLoaded', () => {
              observer.observe(document.body, { childList: true, subtree: true });
          });
     }
 
     /* ------------------- HANDLE PAGINATED CONTENT / SPA NAVIGATION ------------------- */
-    // Function to re-run replacements when URL changes (e.g., in Single Page Applications).
     let lastUrl = location.href;
     new MutationObserver(() => {
       const url = location.href;
       if (url !== lastUrl) {
         lastUrl = url;
-        // Needs a slight delay to allow SPA frameworks to update the DOM
         setTimeout(runReplacements, 500);
       }
     }).observe(document, { subtree: true, childList: true });
 
-    // Also listen for explicit history changes
     window.addEventListener('popstate', () => setTimeout(runReplacements, 500));
     const originalPushState = history.pushState;
     history.pushState = function(...args) {
@@ -227,11 +230,10 @@
 
     /* ------------------- GUI FUNCTIONS ------------------- */
     function createGUI() {
-        // Create the GUI container
+        // Create the GUI container using a custom class name
         guiBox = document.createElement('div');
-        guiBox.className = 'mui-box';
+        guiBox.className = 'text-replacer-box';
         Object.assign(guiBox.style, {
-            position: 'fixed',
             top: '50px',
             right: '20px',
             width: '300px',
@@ -241,16 +243,14 @@
             border: '1px solid #ccc',
             padding: '10px',
             boxShadow: '0 0 10px rgba(0,0,0,0.5)',
-            zIndex: '2147483647', // Ensure it's on top
-            display: 'none' // Initially hidden
+            display: 'none'
         });
         document.body.appendChild(guiBox);
 
         // Create the floating action button (FAB)
         fab = document.createElement('div');
-        fab.className = 'mui-fab';
+        fab.className = 'text-replacer-fab';
         Object.assign(fab.style, {
-            position: 'fixed',
             bottom: '20px',
             right: '20px',
             width: '50px',
@@ -262,10 +262,9 @@
             alignItems: 'center',
             justifyContent: 'center',
             fontSize: '24px',
-            cursor: 'pointer',
-            zIndex: '2147483647'
+            cursor: 'pointer'
         });
-        fab.textContent = '📝'; // Icon for the button
+        fab.textContent = '📝';
         fab.title = 'Toggle Text Replacer GUI';
         fab.addEventListener('click', () => {
             isGuiOpen = !isGuiOpen;
@@ -276,15 +275,14 @@
 
     function displayRules() {
         if (!guiBox) return;
-        guiBox.innerHTML = ''; // Clear previous content
+        guiBox.innerHTML = '';
 
         const title = document.createElement('h2');
         title.textContent = `Replacements for ${window.location.hostname}`;
-        title.style.marginTop = '0'; // Adjust title spacing
+        title.style.marginTop = '0';
         title.style.fontSize = '18px';
         guiBox.appendChild(title);
 
-        // Filter and sort rules for the current site alphabetically by oldText
         const currentSiteRules = Object.entries(replacements)
             .filter(([_, rule]) => rule.site === window.location.hostname)
             .sort(([oldA], [oldB]) => oldA.localeCompare(oldB));
@@ -302,27 +300,27 @@
 
                 const ruleText = document.createElement('span');
                 ruleText.innerHTML = `"${oldText}" → "${newText}" <small>(${caseSensitive ? "Case-Sensitive" : "Case-Insensitive"})</small>`;
-                ruleText.style.flexGrow = '1'; // Allow text to take available space
-                ruleText.style.marginRight = '10px'; // Space before buttons
-                ruleText.style.wordBreak = 'break-all'; // Prevent long text overflow
+                ruleText.style.flexGrow = '1';
+                ruleText.style.marginRight = '10px';
+                ruleText.style.wordBreak = 'break-all';
 
                 const buttonContainer = document.createElement('div');
-                buttonContainer.style.display = 'flex'; // Align buttons horizontally
-                buttonContainer.style.gap = '5px'; // Space between buttons
-                buttonContainer.style.flexShrink = '0'; // Prevent buttons from shrinking
+                buttonContainer.style.display = 'flex';
+                buttonContainer.style.gap = '5px';
+                buttonContainer.style.flexShrink = '0';
 
                 const editButton = document.createElement('button');
-                editButton.textContent = '✏️'; // Using emoji for compactness
-                editButton.title = 'Edit Rule'; // Tooltip
+                editButton.textContent = '✏️';
+                editButton.title = 'Edit Rule';
                 editButton.classList.add('mui-button', 'mui-button-icon');
                 editButton.addEventListener('click', (e) => {
-                     e.stopPropagation(); // Prevent triggering card click if any
+                     e.stopPropagation();
                      editRule(oldText);
                 });
 
                 const deleteButton = document.createElement('button');
-                deleteButton.textContent = '🗑️'; // Using emoji
-                deleteButton.title = 'Delete Rule'; // Tooltip
+                deleteButton.textContent = '🗑️';
+                deleteButton.title = 'Delete Rule';
                 deleteButton.classList.add('mui-button', 'mui-button-icon', 'mui-button-danger');
                 deleteButton.addEventListener('click', (e) => {
                      e.stopPropagation();
@@ -338,12 +336,11 @@
             });
        }
 
-        // Add Import/Export buttons at the bottom
         const actionsDiv = document.createElement('div');
         actionsDiv.style.marginTop = '20px';
         actionsDiv.style.display = 'flex';
-        actionsDiv.style.gap = '10px'; // Space between buttons
-        actionsDiv.style.flexWrap = 'wrap'; // Wrap if needed
+        actionsDiv.style.gap = '10px';
+        actionsDiv.style.flexWrap = 'wrap';
 
         const exportButton = document.createElement('button');
         exportButton.textContent = '📤 Export All Rules';
@@ -399,7 +396,6 @@
         }
 
         const { newText, caseSensitive } = rule;
-
         const updatedOld = prompt("Edit the text to replace:", oldText);
         if (updatedOld === null) return;
         const trimmedUpdatedOld = updatedOld.trim();
@@ -410,7 +406,6 @@
 
         const updatedNew = prompt(`Edit the replacement text for "${trimmedUpdatedOld}":`, newText);
         if (updatedNew === null) return;
-
         const updatedCaseSensitive = confirm("Should this updated rule be case-sensitive?\n(OK = Yes, Cancel = No)");
 
         const updatedRule = {
@@ -497,4 +492,24 @@
                         const importedData = JSON.parse(content);
                         if (!Array.isArray(importedData)) {
                              throw new Error("JSON file is not a valid array of rules.");
-      
+                        }
+                        importedData.forEach(item => {
+                            if (typeof item.old === 'string' && typeof item.new === 'string' && typeof item.cs === 'boolean') {
+                                 rulesToImport.push({
+                                    oldText: item.old.trim(),
+                                    newText: item.new,
+                                    caseSensitive: item.cs,
+                                    site: window.location.hostname
+                                 });
+                            } else {
+                                errorCount++;
+                            }
+                        });
+                    } else {
+                        alert("TXT import not supported yet.");
+                        return;
+                    }
+
+                    for (const rule of rulesToImport) {
+                        replacements[rule.oldText] = rule;
+           
