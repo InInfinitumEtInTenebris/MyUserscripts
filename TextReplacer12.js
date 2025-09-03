@@ -529,4 +529,48 @@
     style.textContent = `
       .mui-box {
         position: fixed; top: 50%; left: 60px; transform: translateY(-50%);
-        width: 320px; background: white; color: #000;
+        width: 320px; background: white; color: #000; padding: 20px; border-radius: 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,.3); z-index: 10000; max-height: 80vh; overflow-y: auto;
+      }
+      .mui-card {
+        background: var(--md-sys-color-surface, #222); color: var(--md-sys-color-on-surface, #fff);
+        border-radius: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.2); padding: 12px; margin: 8px 0;
+        display: flex; justify-content: space-between; align-items: center; gap: 10px;
+      }
+      .mui-button {
+        background: var(--md-sys-color-primary, #6200EE); color: #fff; border: none; border-radius: 24px;
+        padding: 8px 12px; font-size: 14px; cursor: pointer; margin-top: 4px;
+      }
+      .mui-fab {
+        position: fixed; bottom: 20px; right: 20px; width: 56px; height: 56px;
+        background: var(--md-sys-color-primary, #6200EE); color: #fff; border-radius: 50%;
+        box-shadow: 0 4px 10px rgba(0,0,0,.3); display: flex; justify-content: center; align-items: center;
+        font-size: 24px; cursor: pointer; z-index: 10002;
+      }
+      .mui-hidden { display: none !important; }
+      .mui-toggle {
+        position: fixed; top: 50%; left: 20px; transform: translateY(-50%);
+        width: 40px; height: 40px; background: rgba(0,0,0,.1); border-radius: 50%;
+        cursor: pointer; border: 1px solid rgba(0,0,0,.3); z-index: 10001; text-align:center; line-height:40px;
+        font-size: 24px; color: rgba(255,255,255,.9);
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /** ================== INIT ================== **/
+  async function main() {
+    try {
+      await initDB();
+      await loadAllRules();
+    } catch (e) {
+      console.error('DB init error:', e);
+    }
+    applyMaterialYouStyles();
+    createGUI();
+    await updateIconVisibility(); // respect blacklist immediately
+    runReplacements();
+  }
+
+  main();
+})();
