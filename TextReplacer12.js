@@ -555,5 +555,4 @@
         runReplacements();
     }
     main();
-
 })();
