@@ -54,6 +54,15 @@ https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/T
 * TextReplacer1894
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer1894.js
 
+* TextReplacer1895
+https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer1895.js
+
+* TextReplacer1896
+https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer1896.js
+
+* TextReplacer1897
+https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer1897.js
+
 * DataSaver (working)
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/DataSaverWork.js
 
