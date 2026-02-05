@@ -60,7 +60,7 @@ https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/T
 * TextReplacer1896
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer1896.js
 
-* TextReplacer1897
+* TextReplacer1897 (Latest, 2-4-26)
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer1897.js
 
 * DataSaver (working)
