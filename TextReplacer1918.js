@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Text Replacer
 // @namespace    http://tampermonkey.net/
-// @version      9.9.2
-// @description  Virtualized M3 UI, dynamic theming, full Blocklist/Rule I/O, Multi-Term (|), Gap (---), Filter (#{...}#) operators, Expressive motion, custom CRUD GUI. Smart Priority sorts by length first, then recency/frequency; recent term detection badge. Improved lifecycle (early priming respects blocklist, disconnects after init, stats flushed on unload).
+// @version      9.9.3
+// @description  Virtualized M3 UI, dynamic theming, full Blocklist/Rule I/O, Multi-Term (|), Gap (---), Filter (#{...}#) operators, Expressive motion, custom CRUD GUI. Smart Priority sorts by length first, then recency/frequency; recent term detection badge. Improved lifecycle. Added error resilience and delayed init fallback.
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -14,12 +14,26 @@
 (function () {
     'use strict';
 
+    // ---------- EMERGENCY DIAGNOSTICS ----------
+    const LOG_PREFIX = '[TextReplacer]';
+    function log(...args) { console.log(LOG_PREFIX, ...args); }
+    function error(...args) { console.error(LOG_PREFIX, ...args); }
+
+    // Global error catch to keep the script alive
+    window.addEventListener('error', (e) => {
+        if (e.filename && e.filename.includes('text-replacer')) {
+            error('Uncaught error:', e.message, 'at', e.lineno, e.filename);
+        }
+    });
+
     // ---------- EXCLUSIONS ----------
     function isExcludedContext() {
-        const h = window.location.hostname;
-        if (h.includes('google.com/recaptcha') || h.includes('hcaptcha.com') || h.includes('cloudflare.com')) return true;
-        if (document.title.includes('Just a moment...') || document.title.includes('Attention Required!')) return true;
-        if (document.querySelector('.cf-browser-verification, #cf-spinner-allow-5-secs, #challenge-running')) return true;
+        try {
+            const h = window.location.hostname;
+            if (h.includes('google.com/recaptcha') || h.includes('hcaptcha.com') || h.includes('cloudflare.com')) return true;
+            if (document.title.includes('Just a moment...') || document.title.includes('Attention Required!')) return true;
+            if (document.querySelector('.cf-browser-verification, #cf-spinner-allow-5-secs, #challenge-running')) return true;
+        } catch (e) { /* ignore early errors */ }
         return false;
     }
     if (isExcludedContext()) return;
@@ -70,7 +84,7 @@
                 ruleStats.set(k, { lastUsed: v.lastUsed || 0, matchCount: v.matchCount || 0 });
             }
         }
-    } catch (e) {}
+    } catch (e) { error('Failed to load stats', e); }
     let statsSaveTimer = null, statsDirty = false;
 
     function scheduleStatsSave() {
@@ -86,7 +100,7 @@
         if (!statsDirty) return;
         const obj = {};
         ruleStats.forEach((v, k) => { obj[k] = v; });
-        try { GM_setValue(STATS_KEY, JSON.stringify(obj)); } catch (e) {}
+        try { GM_setValue(STATS_KEY, JSON.stringify(obj)); } catch (e) { error('Failed to save stats', e); }
         statsDirty = false;
         if (statsSaveTimer) {
             clearTimeout(statsSaveTimer);
@@ -118,12 +132,14 @@
     function escapeHtml(s) { return (s||'').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]); }
 
     function extractThemeColor() {
-        const meta = document.querySelector('meta[name="theme-color"]');
-        if (meta && meta.content) siteThemeColor = meta.content;
+        try {
+            const meta = document.querySelector('meta[name="theme-color"]');
+            if (meta && meta.content) siteThemeColor = meta.content;
+        } catch (e) {}
     }
 
-    function readGM(k, fb = null) { try { const r = GM_getValue(k, null); return r === null ? fb : (typeof r === 'string' ? JSON.parse(r) : r); } catch (e) { return fb; } }
-    function writeGM(k, v) { try { GM_setValue(k, JSON.stringify(v)); } catch (e) {} }
+    function readGM(k, fb = null) { try { const r = GM_getValue(k, null); return r === null ? fb : (typeof r === 'string' ? JSON.parse(r) : r); } catch (e) { error('readGM failed for', k, e); return fb; } }
+    function writeGM(k, v) { try { GM_setValue(k, JSON.stringify(v)); } catch (e) { error('writeGM failed for', k, e); } }
 
     // ---------- ENGINE LOGIC ----------
     function compileRuleRegex(rule, forHtml = false) {
@@ -162,68 +178,72 @@
         return out.trim();
     }
 
-    // ---------- EARLY PATTERN PRIMING ----------
-    let earlyBlocked = [];
+    // ---------- EARLY PATTERN PRIMING (wrapped in safety) ----------
     try {
-        const raw = GM_getValue(BLOCK_KEY, null);
-        earlyBlocked = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : [];
-    } catch (e) {}
+        let earlyBlocked = [];
+        try {
+            const raw = GM_getValue(BLOCK_KEY, null);
+            earlyBlocked = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : [];
+        } catch (e) { error('Failed to read blocklist for early priming', e); }
 
-    if (!earlyBlocked.includes(HOST) && !isExcludedContext()) {
-        const primedHostData = readGM(ACTIVE_KEY, { hostMap: {} });
-        const earlyRules = primedHostData.hostMap ? (primedHostData.hostMap[HOST] || []) : [];
-        let earlyMo = null;
-        if (earlyRules.length > 0) {
-            const earlyRxMap = earlyRules.map(r => ({ r, rx: compileRuleRegex(r, false) }));
-            earlyMo = new MutationObserver(mutations => {
-                for (const m of mutations) {
-                    m.addedNodes.forEach(node => {
-                        if (node.nodeType === Node.TEXT_NODE && node.nodeValue && node.nodeValue.trim()) {
-                            processEarlyTextNode(node, earlyRxMap);
-                        } else if (node.nodeType === Node.ELEMENT_NODE) {
-                            if (['SCRIPT','STYLE','NOSCRIPT','TEXTAREA','INPUT'].includes(node.tagName)) return;
-                            const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
-                            let tNode;
-                            while ((tNode = walker.nextNode())) {
-                                if (tNode.parentElement && ['SCRIPT','STYLE','NOSCRIPT','TEXTAREA','INPUT'].includes(tNode.parentElement.tagName)) continue;
-                                processEarlyTextNode(tNode, earlyRxMap);
+        if (!earlyBlocked.includes(HOST) && !isExcludedContext()) {
+            const primedHostData = readGM(ACTIVE_KEY, { hostMap: {} });
+            const earlyRules = primedHostData.hostMap ? (primedHostData.hostMap[HOST] || []) : [];
+            let earlyMo = null;
+            if (earlyRules.length > 0) {
+                const earlyRxMap = earlyRules.map(r => ({ r, rx: compileRuleRegex(r, false) }));
+                earlyMo = new MutationObserver(mutations => {
+                    for (const m of mutations) {
+                        m.addedNodes.forEach(node => {
+                            if (node.nodeType === Node.TEXT_NODE && node.nodeValue && node.nodeValue.trim()) {
+                                processEarlyTextNode(node, earlyRxMap);
+                            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                                if (['SCRIPT','STYLE','NOSCRIPT','TEXTAREA','INPUT'].includes(node.tagName)) return;
+                                const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
+                                let tNode;
+                                while ((tNode = walker.nextNode())) {
+                                    if (tNode.parentElement && ['SCRIPT','STYLE','NOSCRIPT','TEXTAREA','INPUT'].includes(tNode.parentElement.tagName)) continue;
+                                    processEarlyTextNode(tNode, earlyRxMap);
+                                }
                             }
-                        }
-                    });
+                        });
+                    }
+                });
+                if (document.documentElement) {
+                    earlyMo.observe(document.documentElement, { childList: true, subtree: true });
+                } else {
+                    earlyMo.observe(document, { childList: true, subtree: true });
                 }
-            });
-            if (document.documentElement) {
-                earlyMo.observe(document.documentElement, { childList: true, subtree: true });
-            } else {
-                earlyMo.observe(document, { childList: true, subtree: true });
             }
-        }
 
-        function processEarlyTextNode(tNode, rxMap) {
-            let val = tNode.nodeValue;
-            let changed = false;
-            const nowTs = now();
-            for (const {r, rx} of rxMap) {
-                const before = val;
-                if (rx.test(val)) {
-                    rx.lastIndex = 0;
-                    val = val.replace(rx, (...args) => {
-                        changed = true;
-                        const matchedStr = args[0];
-                        const gapMatch = args.slice(2, -2).find(x => x !== undefined && x !== matchedStr);
-                        return processReplacement(r, matchedStr, gapMatch);
-                    });
-                    if (val !== before) {
-                        const s = ruleStats.get(r.id) || { lastUsed: 0, matchCount: 0 };
-                        s.lastUsed = nowTs; s.matchCount++; ruleStats.set(r.id, s);
-                        scheduleStatsSave();
+            function processEarlyTextNode(tNode, rxMap) {
+                let val = tNode.nodeValue;
+                let changed = false;
+                const nowTs = now();
+                for (const {r, rx} of rxMap) {
+                    const before = val;
+                    if (rx.test(val)) {
+                        rx.lastIndex = 0;
+                        val = val.replace(rx, (...args) => {
+                            changed = true;
+                            const matchedStr = args[0];
+                            const gapMatch = args.slice(2, -2).find(x => x !== undefined && x !== matchedStr);
+                            return processReplacement(r, matchedStr, gapMatch);
+                        });
+                        if (val !== before) {
+                            const s = ruleStats.get(r.id) || { lastUsed: 0, matchCount: 0 };
+                            s.lastUsed = nowTs; s.matchCount++; ruleStats.set(r.id, s);
+                            scheduleStatsSave();
+                        }
                     }
                 }
+                if (changed) tNode.nodeValue = val;
             }
-            if (changed) tNode.nodeValue = val;
-        }
 
-        window.__trEarlyMoCleanup = () => { if (earlyMo) { earlyMo.disconnect(); earlyMo = null; window.__trEarlyMoCleanup = null; } };
+            window.__trEarlyMoCleanup = () => { if (earlyMo) { earlyMo.disconnect(); earlyMo = null; window.__trEarlyMoCleanup = null; } };
+        }
+    } catch (e) {
+        error('Early priming setup failed', e);
     }
 
     // ---------- IndexedDB ----------
@@ -231,7 +251,7 @@
         return new Promise((resolve, reject) => {
             if (dbInstance) return resolve(dbInstance);
             const req = indexedDB.open(DB_NAME, 1);
-            req.onerror = () => reject(req.error || 'IDB error');
+            req.onerror = (e) => reject(e.target.error || 'IDB error');
             req.onsuccess = (e) => { dbInstance = e.target.result; resolve(dbInstance); };
             req.onupgradeneeded = (e) => {
                 if (!e.target.result.objectStoreNames.contains(STORE_NAME)) e.target.result.createObjectStore(STORE_NAME, { keyPath: 'id' });
@@ -239,33 +259,41 @@
         });
     }
     async function dbGetAll() {
-        const db = await openDB();
-        return new Promise(res => {
-            const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll();
-            req.onsuccess = () => res(req.result || []); req.onerror = () => res([]);
-        });
+        try {
+            const db = await openDB();
+            return new Promise(res => {
+                const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll();
+                req.onsuccess = () => res(req.result || []); req.onerror = () => res([]);
+            });
+        } catch (e) { error('dbGetAll failed', e); return []; }
     }
     async function dbPut(r) {
-        const db = await openDB();
-        return new Promise((res, rej) => {
-            const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).put(r);
-            req.onsuccess = () => { regexCache.clear(); res(); }; req.onerror = e => rej(e);
-        });
+        try {
+            const db = await openDB();
+            return new Promise((res, rej) => {
+                const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).put(r);
+                req.onsuccess = () => { regexCache.clear(); res(); }; req.onerror = e => rej(e);
+            });
+        } catch (e) { error('dbPut failed', e); }
     }
     async function dbDelete(id) {
-        const db = await openDB();
-        return new Promise((res, rej) => {
-            const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(id);
-            req.onsuccess = () => { regexCache.clear(); res(); }; req.onerror = e => rej(e);
-        });
+        try {
+            const db = await openDB();
+            return new Promise((res, rej) => {
+                const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(id);
+                req.onsuccess = () => { regexCache.clear(); res(); }; req.onerror = e => rej(e);
+            });
+        } catch (e) { error('dbDelete failed', e); }
     }
 
     function loadSettings() {
-        const legacyBlock = readGM('TextReplacer_BLOCK_v2', null);
-        blockedDomains = readGM(BLOCK_KEY, legacyBlock || []) || [];
-        if (legacyBlock) { writeGM(BLOCK_KEY, blockedDomains); try { GM_deleteValue('TextReplacer_BLOCK_v2'); } catch(e){} }
-        enableHighlight = readGM(HIGHLIGHT_KEY, true);
-        extractThemeColor();
+        try {
+            const legacyBlock = readGM('TextReplacer_BLOCK_v2', null);
+            blockedDomains = readGM(BLOCK_KEY, legacyBlock || []) || [];
+            if (legacyBlock) { writeGM(BLOCK_KEY, blockedDomains); try { GM_deleteValue('TextReplacer_BLOCK_v2'); } catch(e){} }
+            enableHighlight = readGM(HIGHLIGHT_KEY, true);
+            extractThemeColor();
+        } catch (e) { error('loadSettings failed', e); }
     }
     function saveBlocked() { writeGM(BLOCK_KEY, blockedDomains || []); }
 
@@ -304,14 +332,16 @@
     }
 
     function revertAllReplacements() {
-        document.querySelectorAll('.tr-replaced, .tr-replaced-hidden').forEach(el => {
-            const data = repDataMap.get(el.dataset.trId);
-            el.outerHTML = data ? data.orig : el.textContent;
-        });
-        repDataMap.clear();
-        document.querySelectorAll('[data-tr-processed]').forEach(el => {
-            delete el.dataset.trProcessed;
-        });
+        try {
+            document.querySelectorAll('.tr-replaced, .tr-replaced-hidden').forEach(el => {
+                const data = repDataMap.get(el.dataset.trId);
+                el.outerHTML = data ? data.orig : el.textContent;
+            });
+            repDataMap.clear();
+            document.querySelectorAll('[data-tr-processed]').forEach(el => {
+                delete el.dataset.trProcessed;
+            });
+        } catch (e) { error('revertAllReplacements failed', e); }
     }
 
     async function runDetectionAndApplyInternal() {
@@ -353,7 +383,7 @@
             const bSmart = !!b.smartPriority;
             if (aSmart !== bSmart) return aSmart ? -1 : 1;
             if (aSmart) {
-                // Sort by length first (longest match priority) to avoid shorter terms hijacking longer ones
+                // Sort by length first (longest match priority)
                 const lenDiff = (b.oldText || '').length - (a.oldText || '').length;
                 if (lenDiff !== 0) return lenDiff;
                 const aStats = ruleStats.get(a.id) || { lastUsed: 0, matchCount: 0 };
@@ -368,106 +398,110 @@
         const nowTs = now();
 
         // Pass 1: Block-level HTML replacement
-        const safeBlocks = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote, dd, dt');
-        safeBlocks.forEach(block => {
-            if (block.dataset.trProcessed) return;
-            if (block.querySelector('a, button, input, textarea, select, iframe, script, style, [onclick]')) return;
-            let html = block.innerHTML; let modified = false;
-            for (const rule of rulesList) {
-                try {
-                    const rx = compileRuleRegex(rule, true);
-                    const beforeHtml = html;
-                    if (rx.test(html)) {
-                        html = html.replace(rx, (...args) => {
-                            const matchedStr = args[0];
-                            const offset = args[args.length - 2];
-                            const fullStr = args[args.length - 1];
-                            const before = fullStr.substring(0, offset);
-                            if ((before.match(/</g) || []).length > (before.match(/>/g) || []).length) {
-                                return matchedStr;
+        try {
+            const safeBlocks = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote, dd, dt');
+            safeBlocks.forEach(block => {
+                if (block.dataset.trProcessed) return;
+                if (block.querySelector('a, button, input, textarea, select, iframe, script, style, [onclick]')) return;
+                let html = block.innerHTML; let modified = false;
+                for (const rule of rulesList) {
+                    try {
+                        const rx = compileRuleRegex(rule, true);
+                        const beforeHtml = html;
+                        if (rx.test(html)) {
+                            html = html.replace(rx, (...args) => {
+                                const matchedStr = args[0];
+                                const offset = args[args.length - 2];
+                                const fullStr = args[args.length - 1];
+                                const before = fullStr.substring(0, offset);
+                                if ((before.match(/</g) || []).length > (before.match(/>/g) || []).length) {
+                                    return matchedStr;
+                                }
+                                modified = true;
+                                const gapMatch = args.slice(2, -2).find(x => x !== undefined && x !== matchedStr);
+                                const rep = processReplacement(rule, matchedStr, gapMatch);
+                                const trId = 'tr' + (++trIdCounter);
+                                repDataMap.set(trId, { orig: matchedStr, ruleId: rule.id });
+                                return `<span class="${enableHighlight ? 'tr-replaced' : 'tr-replaced-hidden'}" data-tr-id="${trId}">${rep}</span>`;
+                            });
+                            if (html !== beforeHtml) {
+                                const s = ruleStats.get(rule.id) || { lastUsed: 0, matchCount: 0 };
+                                s.lastUsed = nowTs; s.matchCount++; ruleStats.set(rule.id, s);
+                                scheduleStatsSave();
                             }
+                        }
+                    } catch(e) { error('Block replacement error', e); }
+                }
+                if (modified) { block.innerHTML = html; block.dataset.trProcessed = "true"; }
+            });
+        } catch (e) { error('Pass 1 error', e); }
+
+        // Pass 2: Text node replacement
+        try {
+            const nodeFilter = {
+                acceptNode: function(node) {
+                    const p = node.parentElement;
+                    if (!p) return NodeFilter.FILTER_REJECT;
+                    const tag = p.tagName;
+                    if (tag === 'HEAD' || tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'CODE' || tag === 'PRE' || tag === 'SVG' || tag === 'PATH' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+                    if (p.isContentEditable || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+                    if (p.closest && p.closest('#text-replacer-gui, .mui-fab, .mui-toggle, #tr-quick-edit, .tr-replaced, #tr-selection-fab, [data-tr-processed="true"]')) return NodeFilter.FILTER_REJECT;
+                    return NodeFilter.FILTER_ACCEPT;
+                }
+            };
+            const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, nodeFilter, false);
+            const nodesToReplace = [];
+            let node;
+            while ((node = walker.nextNode())) { nodesToReplace.push(node); }
+
+            for (const textNode of nodesToReplace) {
+                let text = textNode.nodeValue; let modified = false; let ruleMap = [];
+                for (const rule of rulesList) {
+                    try {
+                        const rx = compileRuleRegex(rule, false);
+                        const beforeText = text;
+                        if (!rx.test(text)) continue;
+                        rx.lastIndex = 0;
+                        text = text.replace(rx, (...args) => {
                             modified = true;
+                            const matchedStr = args[0];
                             const gapMatch = args.slice(2, -2).find(x => x !== undefined && x !== matchedStr);
                             const rep = processReplacement(rule, matchedStr, gapMatch);
-                            const trId = 'tr' + (++trIdCounter);
-                            repDataMap.set(trId, { orig: matchedStr, ruleId: rule.id });
-                            return `<span class="${enableHighlight ? 'tr-replaced' : 'tr-replaced-hidden'}" data-tr-id="${trId}">${rep}</span>`;
+                            const marker = `[[TR_REP_${rule.id}_${uuid()}]]`;
+                            ruleMap.push({ marker, rep, orig: matchedStr, ruleId: rule.id });
+                            return marker;
                         });
-                        if (html !== beforeHtml) {
+                        if (text !== beforeText) {
                             const s = ruleStats.get(rule.id) || { lastUsed: 0, matchCount: 0 };
                             s.lastUsed = nowTs; s.matchCount++; ruleStats.set(rule.id, s);
                             scheduleStatsSave();
                         }
-                    }
-                } catch(e) {}
-            }
-            if (modified) { block.innerHTML = html; block.dataset.trProcessed = "true"; }
-        });
-
-        // Pass 2: Text node replacement
-        const nodeFilter = {
-            acceptNode: function(node) {
-                const p = node.parentElement;
-                if (!p) return NodeFilter.FILTER_REJECT;
-                const tag = p.tagName;
-                if (tag === 'HEAD' || tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'CODE' || tag === 'PRE' || tag === 'SVG' || tag === 'PATH' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
-                if (p.isContentEditable || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-                if (p.closest && p.closest('#text-replacer-gui, .mui-fab, .mui-toggle, #tr-quick-edit, .tr-replaced, #tr-selection-fab, [data-tr-processed="true"]')) return NodeFilter.FILTER_REJECT;
-                return NodeFilter.FILTER_ACCEPT;
-            }
-        };
-        const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, nodeFilter, false);
-        const nodesToReplace = [];
-        let node;
-        while ((node = walker.nextNode())) { nodesToReplace.push(node); }
-
-        for (const textNode of nodesToReplace) {
-            let text = textNode.nodeValue; let modified = false; let ruleMap = [];
-            for (const rule of rulesList) {
-                try {
-                    const rx = compileRuleRegex(rule, false);
-                    const beforeText = text;
-                    if (!rx.test(text)) continue;
-                    rx.lastIndex = 0;
-                    text = text.replace(rx, (...args) => {
-                        modified = true;
-                        const matchedStr = args[0];
-                        const gapMatch = args.slice(2, -2).find(x => x !== undefined && x !== matchedStr);
-                        const rep = processReplacement(rule, matchedStr, gapMatch);
-                        const marker = `[[TR_REP_${rule.id}_${uuid()}]]`;
-                        ruleMap.push({ marker, rep, orig: matchedStr, ruleId: rule.id });
-                        return marker;
+                    } catch(e) { error('Text replacement error', e); }
+                }
+                if (modified && textNode.parentNode) {
+                    const fragment = document.createDocumentFragment();
+                    const splitRegex = /(\[\[TR_REP_[^\]]+\]\])/g;
+                    const parts = text.split(splitRegex);
+                    parts.forEach(part => {
+                        const mapped = ruleMap.find(rm => rm.marker === part);
+                        if (mapped) {
+                            const trId = 'tr' + (++trIdCounter);
+                            repDataMap.set(trId, { orig: mapped.orig, ruleId: mapped.ruleId });
+                            const span = document.createElement('span');
+                            span.className = enableHighlight ? 'tr-replaced' : 'tr-replaced-hidden';
+                            span.textContent = mapped.rep;
+                            span.dataset.trId = trId;
+                            fragment.appendChild(span);
+                        } else if (part) { fragment.appendChild(document.createTextNode(part)); }
                     });
-                    if (text !== beforeText) {
-                        const s = ruleStats.get(rule.id) || { lastUsed: 0, matchCount: 0 };
-                        s.lastUsed = nowTs; s.matchCount++; ruleStats.set(rule.id, s);
-                        scheduleStatsSave();
-                    }
-                } catch(e) {}
+                    textNode.parentNode.replaceChild(fragment, textNode);
+                }
             }
-            if (modified && textNode.parentNode) {
-                const fragment = document.createDocumentFragment();
-                const splitRegex = /(\[\[TR_REP_[^\]]+\]\])/g;
-                const parts = text.split(splitRegex);
-                parts.forEach(part => {
-                    const mapped = ruleMap.find(rm => rm.marker === part);
-                    if (mapped) {
-                        const trId = 'tr' + (++trIdCounter);
-                        repDataMap.set(trId, { orig: mapped.orig, ruleId: mapped.ruleId });
-                        const span = document.createElement('span');
-                        span.className = enableHighlight ? 'tr-replaced' : 'tr-replaced-hidden';
-                        span.textContent = mapped.rep;
-                        span.dataset.trId = trId;
-                        fragment.appendChild(span);
-                    } else if (part) { fragment.appendChild(document.createTextNode(part)); }
-                });
-                textNode.parentNode.replaceChild(fragment, textNode);
-            }
-        }
+        } catch (e) { error('Pass 2 error', e); }
     }
 
-    // ---------- VIRTUALIZED GUI ----------
-    function updateGuiIfNeeded() { if (isGuiOpen && listContainer) renderVirtualList(); }
+    // ---------- VIRTUALIZED GUI (with error resilience) ----------
+    function updateGuiIfNeeded() { try { if (isGuiOpen && listContainer) renderVirtualList(); } catch(e) { error('updateGuiIfNeeded failed', e); } }
 
     function saveUIScrollForHost(host, offset) { try { const map = readGM(UI_SCROLL_KEY, {}) || {}; map[host] = offset; writeGM(UI_SCROLL_KEY, map); } catch (e) {} }
     function loadUIScrollForHost(host) { try { const map = readGM(UI_SCROLL_KEY, {}) || {}; const v = map[host]; return (typeof v === 'number') ? v : 0; } catch (e) { return 0; } }
@@ -479,101 +513,105 @@
     }
 
     function renderVirtualList() {
-        if (!listContainer || !virtualScroller) return;
-        if (!localRules || localRules.length === 0) {
-            virtualScroller.style.height = '100px';
-            virtualScroller.innerHTML = `<div style="text-align: center; padding: 40px; color: #777;">No Terms Found. Use [＋ Add Term] or [Import] to begin.</div>`;
-            return;
-        }
-        let filteredRules = localRules || [];
-        if (searchQuery.trim() !== '') {
-            const lowerQ = searchQuery.toLowerCase();
-            filteredRules = filteredRules.filter(r => r.oldText.toLowerCase().includes(lowerQ) || r.newText.toLowerCase().includes(lowerQ));
-        }
-        if (filteredRules.length === 0) {
-            virtualScroller.style.height = '100px';
-            virtualScroller.innerHTML = `<div style="text-align: center; padding: 40px; color: #777;">No results for "${escapeHtml(searchQuery)}".</div>`;
-            return;
-        }
-        const sorted = filteredRules.sort((a, b) => a.oldText.localeCompare(b.oldText));
-        const scrollTop = listContainer.scrollTop;
-        const viewportHeight = listContainer.clientHeight || 400;
-        virtualScroller.style.height = `${sorted.length * CARD_HEIGHT}px`;
-        const startIndex = Math.max(0, Math.floor(scrollTop / CARD_HEIGHT) - 2);
-        const endIndex = Math.min(sorted.length, Math.ceil((scrollTop + viewportHeight) / CARD_HEIGHT) + 2);
-        const nowTs = now();
-        let htmlStr = '';
-        for (let i = startIndex; i < endIndex; i++) {
-            const r = sorted[i]; const isActive = !!activeRules[r.id];
-            const stats = ruleStats.get(r.id);
-            const isRecent = stats && (nowTs - stats.lastUsed) < 3600000;
-            const meta = `${isActive ? '✅ Active' : '💤 Idle'} • ${r.forceGlobal ? '🌍 Global' : '🤖 Auto'} ${r.smartPriority ? '• ⚡ Priority' : ''}${isRecent ? ' • ⏱️ Recent' : ''}`;
-            htmlStr += `
-                <div class="mui-card ${isActive ? 'active' : ''}" style="top:${i * CARD_HEIGHT}px" data-id="${r.id}">
-                    <div style="flex-grow:1; overflow:hidden;">
-                        <div class="mui-rule-text">"${escapeHtml(r.oldText)}" ➡ "${escapeHtml(r.newText)}"</div>
-                        <div class="mui-rule-meta">${meta}</div>
+        try {
+            if (!listContainer || !virtualScroller) return;
+            if (!localRules || localRules.length === 0) {
+                virtualScroller.style.height = '100px';
+                virtualScroller.innerHTML = `<div style="text-align: center; padding: 40px; color: #777;">No Terms Found. Use [＋ Add Term] or [Import] to begin.</div>`;
+                return;
+            }
+            let filteredRules = localRules || [];
+            if (searchQuery.trim() !== '') {
+                const lowerQ = searchQuery.toLowerCase();
+                filteredRules = filteredRules.filter(r => r.oldText.toLowerCase().includes(lowerQ) || r.newText.toLowerCase().includes(lowerQ));
+            }
+            if (filteredRules.length === 0) {
+                virtualScroller.style.height = '100px';
+                virtualScroller.innerHTML = `<div style="text-align: center; padding: 40px; color: #777;">No results for "${escapeHtml(searchQuery)}".</div>`;
+                return;
+            }
+            const sorted = filteredRules.sort((a, b) => a.oldText.localeCompare(b.oldText));
+            const scrollTop = listContainer.scrollTop;
+            const viewportHeight = listContainer.clientHeight || 400;
+            virtualScroller.style.height = `${sorted.length * CARD_HEIGHT}px`;
+            const startIndex = Math.max(0, Math.floor(scrollTop / CARD_HEIGHT) - 2);
+            const endIndex = Math.min(sorted.length, Math.ceil((scrollTop + viewportHeight) / CARD_HEIGHT) + 2);
+            const nowTs = now();
+            let htmlStr = '';
+            for (let i = startIndex; i < endIndex; i++) {
+                const r = sorted[i]; const isActive = !!activeRules[r.id];
+                const stats = ruleStats.get(r.id);
+                const isRecent = stats && (nowTs - stats.lastUsed) < 3600000;
+                const meta = `${isActive ? '✅ Active' : '💤 Idle'} • ${r.forceGlobal ? '🌍 Global' : '🤖 Auto'} ${r.smartPriority ? '• ⚡ Priority' : ''}${isRecent ? ' • ⏱️ Recent' : ''}`;
+                htmlStr += `
+                    <div class="mui-card ${isActive ? 'active' : ''}" style="top:${i * CARD_HEIGHT}px" data-id="${r.id}">
+                        <div style="flex-grow:1; overflow:hidden;">
+                            <div class="mui-rule-text">"${escapeHtml(r.oldText)}" ➡ "${escapeHtml(r.newText)}"</div>
+                            <div class="mui-rule-meta">${meta}</div>
+                        </div>
+                        <div class="mui-card-actions">
+                            <button class="mui-icon-btn mui-tonal edit-btn">✏️</button>
+                            <button class="mui-icon-btn mui-error del-btn">🗑️</button>
+                        </div>
                     </div>
-                    <div class="mui-card-actions">
-                        <button class="mui-icon-btn mui-tonal edit-btn">✏️</button>
-                        <button class="mui-icon-btn mui-error del-btn">🗑️</button>
-                    </div>
-                </div>
-            `;
-        }
-        virtualScroller.innerHTML = htmlStr;
+                `;
+            }
+            virtualScroller.innerHTML = htmlStr;
+        } catch (e) { error('renderVirtualList failed', e); }
     }
 
     function buildFullGUI() {
-        searchQuery = '';
-        mainPage.innerHTML = `
-            <div class="mui-header"><h2>Library</h2><button class="mui-icon-btn" id="tr-settings-btn">⚙️</button></div>
-            <div class="mui-search-bar">
-                <span style="opacity:0.6; margin-right:8px;">🔍</span>
-                <input type="text" id="tr-search-input" placeholder="Search terms...">
-            </div>
-            <div class="mui-list-container" id="tr-list-container">
-                <div id="tr-virtual-scroller" style="position: relative; width: 100%;"></div>
-            </div>
-            <div class="mui-bottom-actions">
-                <button class="mui-button mui-pill-primary" id="tr-add-btn">＋ Add Term</button>
-                <div style="display:flex; gap:8px;">
-                    <button class="mui-button mui-pill-secondary" id="tr-export-btn">Export</button>
-                    <button class="mui-button mui-pill-secondary" id="tr-import-btn">Import</button>
+        try {
+            searchQuery = '';
+            mainPage.innerHTML = `
+                <div class="mui-header"><h2>Library</h2><button class="mui-icon-btn" id="tr-settings-btn">⚙️</button></div>
+                <div class="mui-search-bar">
+                    <span style="opacity:0.6; margin-right:8px;">🔍</span>
+                    <input type="text" id="tr-search-input" placeholder="Search terms...">
                 </div>
-            </div>
-        `;
-        listContainer = mainPage.querySelector('#tr-list-container');
-        virtualScroller = mainPage.querySelector('#tr-virtual-scroller');
-        const searchInput = mainPage.querySelector('#tr-search-input');
-        searchInput.addEventListener('input', (e) => {
-            searchQuery = e.target.value;
-            listContainer.scrollTop = 0;
+                <div class="mui-list-container" id="tr-list-container">
+                    <div id="tr-virtual-scroller" style="position: relative; width: 100%;"></div>
+                </div>
+                <div class="mui-bottom-actions">
+                    <button class="mui-button mui-pill-primary" id="tr-add-btn">＋ Add Term</button>
+                    <div style="display:flex; gap:8px;">
+                        <button class="mui-button mui-pill-secondary" id="tr-export-btn">Export</button>
+                        <button class="mui-button mui-pill-secondary" id="tr-import-btn">Import</button>
+                    </div>
+                </div>
+            `;
+            listContainer = mainPage.querySelector('#tr-list-container');
+            virtualScroller = mainPage.querySelector('#tr-virtual-scroller');
+            const searchInput = mainPage.querySelector('#tr-search-input');
+            searchInput.addEventListener('input', (e) => {
+                searchQuery = e.target.value;
+                listContainer.scrollTop = 0;
+                renderVirtualList();
+            });
+            listContainer.addEventListener('scroll', () => {
+                if (!isRenderingScroll) {
+                    isRenderingScroll = true;
+                    requestAnimationFrame(() => {
+                        if (isGuiOpen) renderVirtualList();
+                        isRenderingScroll = false;
+                    });
+                }
+                saveUIScrollDebounced();
+            });
+            virtualScroller.addEventListener('click', (e) => {
+                const editBtn = e.target.closest('.edit-btn');
+                if (editBtn) return editRuleInteractive(editBtn.closest('.mui-card').dataset.id);
+                const delBtn = e.target.closest('.del-btn');
+                if (delBtn) return deleteRuleInteractive(delBtn.closest('.mui-card').dataset.id);
+            });
+            const savedScroll = loadUIScrollForHost(HOST);
+            if (typeof savedScroll === 'number') setTimeout(() => { if (listContainer) listContainer.scrollTop = savedScroll; }, 0);
+            mainPage.querySelector('#tr-settings-btn').onclick = () => showPage('settings');
+            mainPage.querySelector('#tr-add-btn').onclick = () => addRuleInteractive();
+            mainPage.querySelector('#tr-export-btn').onclick = exportRulesFile;
+            mainPage.querySelector('#tr-import-btn').onclick = () => { promptFileImport(true); };
             renderVirtualList();
-        });
-        listContainer.addEventListener('scroll', () => {
-            if (!isRenderingScroll) {
-                isRenderingScroll = true;
-                requestAnimationFrame(() => {
-                    if (isGuiOpen) renderVirtualList();
-                    isRenderingScroll = false;
-                });
-            }
-            saveUIScrollDebounced();
-        });
-        virtualScroller.addEventListener('click', (e) => {
-            const editBtn = e.target.closest('.edit-btn');
-            if (editBtn) return editRuleInteractive(editBtn.closest('.mui-card').dataset.id);
-            const delBtn = e.target.closest('.del-btn');
-            if (delBtn) return deleteRuleInteractive(delBtn.closest('.mui-card').dataset.id);
-        });
-        const savedScroll = loadUIScrollForHost(HOST);
-        if (typeof savedScroll === 'number') setTimeout(() => { if (listContainer) listContainer.scrollTop = savedScroll; }, 0);
-        mainPage.querySelector('#tr-settings-btn').onclick = () => showPage('settings');
-        mainPage.querySelector('#tr-add-btn').onclick = () => addRuleInteractive();
-        mainPage.querySelector('#tr-export-btn').onclick = exportRulesFile;
-        mainPage.querySelector('#tr-import-btn').onclick = () => { promptFileImport(true); };
-        renderVirtualList();
+        } catch (e) { error('buildFullGUI failed', e); }
     }
 
     // ---------- CUSTOM MATERIAL EXPRESSIVE GUI ----------
@@ -700,58 +738,60 @@
 
     // ---------- SETTINGS & BLOCKLIST ----------
     function showSettings() {
-        loadSettings();
-        settingsPage.innerHTML = `
-            <div class="mui-header mui-settings-header">
-                <button class="mui-button mui-back-pill mui-pill-settings" id="tr-back-btn">⬅ Back</button>
-                <h2>Settings</h2>
-            </div>
-            <div class="mui-settings-container" id="tr-set-cont"></div>
-        `;
-        const cont = settingsPage.querySelector('#tr-set-cont');
-        const blTitle = document.createElement('div'); blTitle.className = 'mui-settings-title'; blTitle.textContent = 'Blocklist (Global)'; cont.appendChild(blTitle);
-        (blockedDomains || []).forEach(d => {
-            const row = document.createElement('div'); row.className = 'mui-settings-row';
-            row.innerHTML = `<span style="font-weight: 500;">${escapeHtml(d)}</span>`;
-            const x = document.createElement('button'); x.textContent = '✖'; x.className = 'mui-icon-btn mui-error'; x.onclick = () => { blockedDomains = blockedDomains.filter(x => x !== d); saveBlocked(); showSettings(); };
-            row.appendChild(x); cont.appendChild(row);
-        });
-        const blockBtn = document.createElement('button'); blockBtn.textContent = '🚫 Block Current Site'; blockBtn.className = 'mui-button mui-pill-settings';
-        blockBtn.onclick = () => { if (!blockedDomains.includes(HOST)) { blockedDomains.push(HOST); saveBlocked(); showSettings(); } }; cont.appendChild(blockBtn);
-        const blExImpRow = document.createElement('div'); blExImpRow.className = 'mui-settings-action-row';
-        const blExportBtn = document.createElement('button'); blExportBtn.textContent = 'Export'; blExportBtn.className = 'mui-button mui-pill-settings'; blExportBtn.onclick = () => {
-            const blob = new Blob([JSON.stringify({ domains: blockedDomains }, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `text-replacer-blocklist-${now()}.json`;
-            document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-        };
-        const blImportBtn = document.createElement('button'); blImportBtn.textContent = 'Import'; blImportBtn.className = 'mui-button mui-pill-settings'; blImportBtn.onclick = () => {
-            promptFileImport(false);
-        };
-        blExImpRow.append(blExportBtn, blImportBtn); cont.appendChild(blExImpRow);
-
-        const hlTitle = document.createElement('div'); hlTitle.className = 'mui-settings-title'; hlTitle.textContent = 'Appearance'; cont.appendChild(hlTitle);
-        const hlBtn = document.createElement('button'); hlBtn.textContent = enableHighlight ? '🔵 Blue Highlight: ON' : '⚪ Blue Highlight: OFF'; hlBtn.className = 'mui-button mui-pill-settings';
-        hlBtn.onclick = () => { enableHighlight = !enableHighlight; writeGM(HIGHLIGHT_KEY, enableHighlight); revertAllReplacements(); runDetectionAndApplyInternal(); showSettings(); }; cont.appendChild(hlBtn);
-
-        if (externalIhwAPI) {
-            const othersTitle = document.createElement('div'); othersTitle.className = 'mui-settings-title'; othersTitle.textContent = 'Other Userscripts'; cont.appendChild(othersTitle);
-            const ihwRow = document.createElement('div'); ihwRow.className = 'mui-settings-row';
-            ihwRow.innerHTML = `<span style="font-weight: 500;">I Hate Waiting</span>`;
-            const ihwBtn = document.createElement('button'); ihwBtn.className = 'mui-button mui-pill-settings';
-            ihwBtn.textContent = externalIhwAPI.isOff ? 'OFF' : 'ON';
-            if (!externalIhwAPI.isOff) {
-                ihwBtn.style.background = 'var(--md-sys-color-primary)';
-                ihwBtn.style.color = 'var(--md-sys-color-surface)';
-            }
-            ihwBtn.onclick = () => {
-                externalIhwAPI.toggle();
-                showSettings();
+        try {
+            loadSettings();
+            settingsPage.innerHTML = `
+                <div class="mui-header mui-settings-header">
+                    <button class="mui-button mui-back-pill mui-pill-settings" id="tr-back-btn">⬅ Back</button>
+                    <h2>Settings</h2>
+                </div>
+                <div class="mui-settings-container" id="tr-set-cont"></div>
+            `;
+            const cont = settingsPage.querySelector('#tr-set-cont');
+            const blTitle = document.createElement('div'); blTitle.className = 'mui-settings-title'; blTitle.textContent = 'Blocklist (Global)'; cont.appendChild(blTitle);
+            (blockedDomains || []).forEach(d => {
+                const row = document.createElement('div'); row.className = 'mui-settings-row';
+                row.innerHTML = `<span style="font-weight: 500;">${escapeHtml(d)}</span>`;
+                const x = document.createElement('button'); x.textContent = '✖'; x.className = 'mui-icon-btn mui-error'; x.onclick = () => { blockedDomains = blockedDomains.filter(x => x !== d); saveBlocked(); showSettings(); };
+                row.appendChild(x); cont.appendChild(row);
+            });
+            const blockBtn = document.createElement('button'); blockBtn.textContent = '🚫 Block Current Site'; blockBtn.className = 'mui-button mui-pill-settings';
+            blockBtn.onclick = () => { if (!blockedDomains.includes(HOST)) { blockedDomains.push(HOST); saveBlocked(); showSettings(); } }; cont.appendChild(blockBtn);
+            const blExImpRow = document.createElement('div'); blExImpRow.className = 'mui-settings-action-row';
+            const blExportBtn = document.createElement('button'); blExportBtn.textContent = 'Export'; blExportBtn.className = 'mui-button mui-pill-settings'; blExportBtn.onclick = () => {
+                const blob = new Blob([JSON.stringify({ domains: blockedDomains }, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `text-replacer-blocklist-${now()}.json`;
+                document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
             };
-            ihwRow.appendChild(ihwBtn);
-            cont.appendChild(ihwRow);
-        }
+            const blImportBtn = document.createElement('button'); blImportBtn.textContent = 'Import'; blImportBtn.className = 'mui-button mui-pill-settings'; blImportBtn.onclick = () => {
+                promptFileImport(false);
+            };
+            blExImpRow.append(blExportBtn, blImportBtn); cont.appendChild(blExImpRow);
 
-        settingsPage.querySelector('#tr-back-btn').onclick = () => showPage('main');
+            const hlTitle = document.createElement('div'); hlTitle.className = 'mui-settings-title'; hlTitle.textContent = 'Appearance'; cont.appendChild(hlTitle);
+            const hlBtn = document.createElement('button'); hlBtn.textContent = enableHighlight ? '🔵 Blue Highlight: ON' : '⚪ Blue Highlight: OFF'; hlBtn.className = 'mui-button mui-pill-settings';
+            hlBtn.onclick = () => { enableHighlight = !enableHighlight; writeGM(HIGHLIGHT_KEY, enableHighlight); revertAllReplacements(); runDetectionAndApplyInternal(); showSettings(); }; cont.appendChild(hlBtn);
+
+            if (externalIhwAPI) {
+                const othersTitle = document.createElement('div'); othersTitle.className = 'mui-settings-title'; othersTitle.textContent = 'Other Userscripts'; cont.appendChild(othersTitle);
+                const ihwRow = document.createElement('div'); ihwRow.className = 'mui-settings-row';
+                ihwRow.innerHTML = `<span style="font-weight: 500;">I Hate Waiting</span>`;
+                const ihwBtn = document.createElement('button'); ihwBtn.className = 'mui-button mui-pill-settings';
+                ihwBtn.textContent = externalIhwAPI.isOff ? 'OFF' : 'ON';
+                if (!externalIhwAPI.isOff) {
+                    ihwBtn.style.background = 'var(--md-sys-color-primary)';
+                    ihwBtn.style.color = 'var(--md-sys-color-surface)';
+                }
+                ihwBtn.onclick = () => {
+                    externalIhwAPI.toggle();
+                    showSettings();
+                };
+                ihwRow.appendChild(ihwBtn);
+                cont.appendChild(ihwRow);
+            }
+
+            settingsPage.querySelector('#tr-back-btn').onclick = () => showPage('main');
+        } catch (e) { error('showSettings failed', e); }
     }
 
     // ---------- QUICK EDIT & SELECTION ----------
@@ -871,19 +911,22 @@
 
     function createGUI() {
         if (document.getElementById('text-replacer-gui')) return;
-        guiBox = document.createElement('div'); guiBox.id = 'text-replacer-gui'; guiBox.className = 'mui-box';
-        const toggle = document.createElement('div'); toggle.className = 'mui-toggle'; toggle.textContent = '☰';
-        toggle.onclick = () => { isGuiOpen = !isGuiOpen; isGuiOpen ? guiBox.classList.add('open') : guiBox.classList.remove('open'); if (isGuiOpen) showPage('main'); };
-        document.documentElement.append(guiBox, toggle);
+        try {
+            guiBox = document.createElement('div'); guiBox.id = 'text-replacer-gui'; guiBox.className = 'mui-box';
+            const toggle = document.createElement('div'); toggle.className = 'mui-toggle'; toggle.textContent = '☰';
+            toggle.onclick = () => { isGuiOpen = !isGuiOpen; isGuiOpen ? guiBox.classList.add('open') : guiBox.classList.remove('open'); if (isGuiOpen) showPage('main'); };
+            document.documentElement.append(guiBox, toggle);
 
-        mainPage = document.createElement('div'); mainPage.id = 'tr-main-page'; mainPage.className = 'mui-page';
-        settingsPage = document.createElement('div'); settingsPage.id = 'tr-settings-page'; settingsPage.className = 'mui-page';
-        guiBox.append(mainPage, settingsPage);
+            mainPage = document.createElement('div'); mainPage.id = 'tr-main-page'; mainPage.className = 'mui-page';
+            settingsPage = document.createElement('div'); settingsPage.id = 'tr-settings-page'; settingsPage.className = 'mui-page';
+            guiBox.append(mainPage, settingsPage);
 
-        dialogWrapper = document.createElement('div'); dialogWrapper.id = 'tr-dialog-wrapper'; dialogWrapper.className = 'mui-dialog-overlay';
-        document.documentElement.appendChild(dialogWrapper);
+            dialogWrapper = document.createElement('div'); dialogWrapper.id = 'tr-dialog-wrapper'; dialogWrapper.className = 'mui-dialog-overlay';
+            document.documentElement.appendChild(dialogWrapper);
 
-        createQuickEditGUI(); createSelectionFab();
+            createQuickEditGUI(); createSelectionFab();
+            log('GUI elements created.');
+        } catch (e) { error('createGUI failed', e); }
     }
 
     function showCustomDialog(contentHtml, afterRenderCallback) {
@@ -937,28 +980,54 @@
         }
     });
 
-    // ---------- INIT ----------
-    async function bootstrap() {
-        const loadDoc = () => {
-            loadSettings(); applyStyles(); createGUI();
-            if (blockedDomains.includes(HOST)) return;
-            if (document.body) mo.observe(document.body, { childList: true, subtree: true, characterData: true });
-        };
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', loadDoc);
-        } else {
-            loadDoc();
-        }
-        localRules = await dbGetAll();
-        if ((!localRules || localRules.length === 0)) {
-            const master = readGM(MASTER_KEY, null);
-            if (master && Array.isArray(master.rules) && master.rules.length > 0) await mergeMasterPayload(master);
-        } else scheduleWriteMasterMirror();
-        await runDetectionAndApplyInternal();
-        if (window.__trEarlyMoCleanup) {
-            window.__trEarlyMoCleanup();
-            delete window.__trEarlyMoCleanup;
+    // ---------- FALLBACK INIT ----------
+    function attemptInit() {
+        try {
+            if (document.body) {
+                log('Body found, starting full init.');
+                bootstrap();
+            } else {
+                log('Body not yet available. Retrying in 100ms...');
+                setTimeout(attemptInit, 100);
+            }
+        } catch (e) {
+            error('Init failed, will retry', e);
+            setTimeout(attemptInit, 500);
         }
     }
-    bootstrap();
+
+    async function bootstrap() {
+        try {
+            loadSettings(); applyStyles(); createGUI();
+            if (blockedDomains.includes(HOST)) return;
+            if (document.body) {
+                mo.observe(document.body, { childList: true, subtree: true, characterData: true });
+            }
+            localRules = await dbGetAll();
+            if ((!localRules || localRules.length === 0)) {
+                const master = readGM(MASTER_KEY, null);
+                if (master && Array.isArray(master.rules) && master.rules.length > 0) await mergeMasterPayload(master);
+            } else scheduleWriteMasterMirror();
+            await runDetectionAndApplyInternal();
+            if (window.__trEarlyMoCleanup) {
+                window.__trEarlyMoCleanup();
+                delete window.__trEarlyMoCleanup;
+            }
+            log('Text Replacer initialized successfully.');
+        } catch (e) {
+            error('Bootstrap error', e);
+            // Show minimal GUI so settings remain accessible
+            createGUI();
+        }
+    }
+
+    // Kick off with a slight delay to ensure DOM reachable
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            setTimeout(attemptInit, 0);
+        });
+    } else {
+        setTimeout(attemptInit, 0);
+    }
+
 })();
