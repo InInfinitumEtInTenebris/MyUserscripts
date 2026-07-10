@@ -99,6 +99,9 @@ https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/T
 * TextReplacer1931
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer1931.user.js
 
+* TextReplacer1933 [WORKING] [CURRENT OPTIMAL]
+https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/TextReplacer1933.user.js
+
 * DataSaver (working)
 https://raw.githubusercontent.com/InInfinitumEtInTenebris/MyUserscripts/master/DataSaverWork.js
 
